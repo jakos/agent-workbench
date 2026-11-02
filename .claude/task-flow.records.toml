@@ -1,0 +1,8 @@
+# task-flow finish records for THIS repository (project file).
+# scripts/task_record.py reads it from the selected worktree (or the repository root
+# when the task has no worktree); --config <path> overrides the location. Parsed
+# strictly with tomllib: unknown keys anywhere are an error (exit 2). No secrets here.
+# Disabled in this repository while documentation is being rebuilt.
+
+[records]
+enabled = false
