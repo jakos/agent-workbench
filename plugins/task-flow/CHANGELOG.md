@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.13.0 - 2026-11-06
+
+### Features
+
+- feat(bench): publish run time next to cost and quality (edb589043f8e)
+
+- feat(bench): run agent command-line tools in the benchmark (8a9ab5a1b32f)
+
+- feat(bench): add a repeatable benchmark protocol with per-round hidden probes (75faea38eca0)
+
+- feat(task-flow): run the backlog and reviewer roles through an external profile (f344a8959d4c)
+
+- feat(task-flow): choose the implementer per task by plan size (4426ff497e8a)
+
+- feat(task-flow): run the planner role through an external profile (0e274f40556b)
+
+- feat(task-flow): add a generic cli driver to implement.py (eb50a6dedbf6)
+
+- feat(task-flow): add task epics to group, run and inspect related tasks (3762010cc962)
+
+- feat(task-flow): add an opt-in finish record and commit trailers (db4c4b2b5616)
+
+- feat(task-flow): publish notes for merged runs and mixed turn limits (375b2f822572)
+
+- feat(task-flow): add bench.py merge and fill the All table in report.md (596565f690db)
+
+### Fixes
+
+- fix(task-flow): make two tests independent of the host (8518e8381b15)
+
+- fix(task-flow): make the doctor and cli driver tests independent of the host (5070d8e1fa63)
+
+- fix(task-flow): make the test suite portable across Windows, Linux and drives (2b01f58b6a0d)
+
+### Other
+
+- docs: state the AI-native SDLC purpose and generate the stage status view (b65d89da0836)
+
+- ci: run the task-flow gates on GitHub Actions (a200303d5265)
+
+- docs(task-flow): save the first benchmark runs (383d3414bf2e)
+
 ## 0.12.0 - 2026-11-02
 
 ### Features
