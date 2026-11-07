@@ -352,5 +352,19 @@ class PruneTaskTest(unittest.TestCase):
         self.assertIn("kept: ", result.stdout.decode("utf-8"))
 
 
+class GateLogRetentionTest(unittest.TestCase):
+    def test_gate_evidence_is_kept_without_records_opt_in(self) -> None:
+        import sys
+
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        import prune_task
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "gates.jsonl"
+            path.write_bytes(b"original gate bytes\n")
+            self.assertTrue(prune_task.is_kept(path))
+            self.assertEqual(path.read_bytes(), b"original gate bytes\n")
+
+
 if __name__ == "__main__":
     unittest.main()

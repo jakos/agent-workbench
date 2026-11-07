@@ -24,3 +24,11 @@ No reassessment, risk-based stop, new approval gate or publication action is add
 
 Consult orchestration → **Policy** first: `scripts/policy.py` clamps `--auto`,
 approval, round limits, finish actions, mode and budgets; no file keeps legacy behaviour.
+
+When configured, run `scripts/phase_gate.py finish --task-dir <absolute-task-dir>`
+through uv **before any finish side effect**. Require current plan authorization,
+baseline/check evidence and a current APPROVED review covering every AC without
+introduced check failures. Refusal leaves finish unstarted; repair and resume.
+Use the gate's transition to done, retain gates.jsonl during pruning, and export only
+its deterministic SHA-256 digest in enabled task records. No records opt-in is needed
+to preserve the original gate evidence.

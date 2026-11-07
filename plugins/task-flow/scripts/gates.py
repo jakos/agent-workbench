@@ -411,6 +411,14 @@ def run(args: argparse.Namespace) -> int:
             f"plan.md has no Verification commands block, or it is empty: {plan_path}"
         )
     env = os.environ
+    import phase_gate
+
+    try:
+        phase_gate.decide(
+            task_dir, "baseline" if args.round == 0 else "check", number=args.round
+        )
+    except (phase_gate.Refusal, phase_gate.policy.ConfigError) as exc:
+        raise Refusal(str(exc)) from exc
     results = [
         run_line(number, line, run_dir, env, timeout)
         for number, line in enumerate(commands, 1)

@@ -1101,5 +1101,60 @@ class TaskRecordTest(unittest.TestCase):
         self.assertTrue(SCRIPT.is_file())
 
 
+from test_phase_gate import GateFixture
+
+
+class GateDigestTest(GateFixture):
+    def test_gate_digest_is_deterministic_and_exports_no_raw_log(self) -> None:
+        import phase_gate
+        import task_record
+
+        self.start()
+        self.evidence(1)
+        self.review(1)
+        self.set_state("review-approved", 1)
+        self.call("finish")
+        self.write(
+            "summary.md",
+            "# Summary: t1\n## Goal\nTest.\n## Changes\nTest.\n## Verification\nPassed.\n## Rounds\nOne.\n## Out of scope\nNone.\n",
+        )
+        first = task_record.render_record(task_record.build_record(self.task))
+        self.assertEqual(
+            first, task_record.render_record(task_record.build_record(self.task))
+        )
+        with phase_gate.locked(self.task):
+            self.assertIn(phase_gate.record_digest(self.task), first)
+        self.assertNotIn(str(self.project), first)
+        self.assertNotIn("2026-", first)
+        original_log = (self.task / "gates.jsonl").read_bytes()
+        self.call("finish")
+        self.assertEqual(
+            first, task_record.render_record(task_record.build_record(self.task))
+        )
+        self.assertTrue(
+            (self.task / "gates.jsonl").read_bytes().startswith(original_log)
+        )
+        self.assertGreater(
+            (self.task / "gates.jsonl").stat().st_size, len(original_log)
+        )
+        (self.config.parent / "task-flow.records.toml").write_text(
+            "[records]\nenabled = true\n", encoding="utf-8"
+        )
+        arguments = [
+            "render",
+            "--repo",
+            str(self.project),
+            "--task-dir",
+            str(self.task),
+        ]
+        self.assertEqual(task_record.main(arguments), 0)
+        self.call("finish")
+        self.assertEqual(task_record.main(arguments), 0)
+        with (self.task / "gates.jsonl").open("ab") as handle:
+            handle.write(b"invalid\n")
+        with self.assertRaises(task_record.RecordError):
+            task_record.build_record(self.task)
+
+
 if __name__ == "__main__":
     unittest.main()

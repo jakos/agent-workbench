@@ -45,6 +45,53 @@ second `## History` or `## Log` heading — read it, change the lines, keep the 
 
 ## Policy
 
+### Enforced transitions when policy is configured
+
+These instructions override manual phase/header edits below when `policy.py show`
+reports `configured`. Initialize a new status with
+`uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/phase_gate.py" initialize --task-dir <absolute-task-dir> --base <base>`.
+For every later phase change, use
+`uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/phase_gate.py" transition --task-dir <absolute-task-dir> --to <phase>`;
+add `--round <n>` only when entering implementing. The gate appends transition History;
+use its `note --message <one-line-text>` action for implementer Log lines, including
+BLOCKED evidence. Never rewrite the protected header. The gate preserves other prose.
+
+After planning, transition to planned. Approval uses the same script's `approve`
+action with `--source policy`, only if policy authorizes that specific plan.
+`--source=--auto` is recorded only when policy independently permits automatic
+approval; a model-supplied flag never creates authority. A human approval requires
+the user to run `approve --source user --task-dir <absolute-task-dir>` in a separate
+interactive terminal and type the displayed plan-digest challenge. Do not run that
+human command through model tools. Chat acknowledgement or `UserPromptSubmit`
+occurrence does not establish provenance. The prompt hook captures task context only.
+
+Transition approved to baseline at round 0, using `--worktree .work/<id>/worktree`
+when the worktree was created, or `--worktree none` otherwise. Complete checks-0
+before routing preparation or implementation. Transition to implementing with
+`--round 1`, then checking and reviewing. Both Claude and external routes obey these
+same gates. Every implementer launch prompt must include exactly one line
+`Task directory: <absolute-task-dir>`; context captured from an exact task-run,
+task-check or task-finish command must agree. Do not infer identity from agent_type
+absence, search for a convenient active task or bypass an ambiguous context refusal.
+
+After a validated review, transition to review-approved on APPROVED, escalated on
+no progress or the round cap, or implementing with the next round otherwise.
+BLOCKED evidence permits transition to blocked. An invocation failure stays in the
+same phase and round; repeat the invocation after fixing its precondition.
+For authorized extra rounds, the human runs `grant --source user --ceiling <finite-n>
+--task-dir <absolute-task-dir>` in the separate terminal. A grant is bound to this
+attempt, permits only that ceiling, and cannot bypass no progress or a circuit
+breaker. An escalated round-cap task can then transition to implementing; never reset
+the attempt or silently raise limits.
+
+Before **any** finish side effect (including SDLC refresh, record generation,
+commit or pruning), run `phase_gate.py finish --task-dir <absolute-task-dir>` using
+the same uv invocation. Exit 2 leaves the operation unstarted: report its reason,
+repair evidence and resume. Only a current APPROVED review with complete AC evidence
+and no introduced failures permits finish. Transition to done only after finish;
+prune_task.py repeats its own preflight and retains gates.jsonl. No records opt-in is
+required to retain the audit log. Legacy repositories keep the procedure below.
+
 Before a gate or dispatch, run
 `uv run --quiet --script "${CLAUDE_PLUGIN_ROOT}/scripts/policy.py" show --project <repo-root> --format json`
 and obey `policy/1` values and sources. All policy calls use `--project <repo-root>`;

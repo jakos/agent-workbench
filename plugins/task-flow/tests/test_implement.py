@@ -2585,5 +2585,24 @@ class InfrastructureClassificationTest(unittest.TestCase):
                 self.assertEqual(request.call_count, 2)
 
 
+from test_phase_gate import GateFixture
+
+
+class WorkflowPreflightTest(GateFixture):
+    def test_refused_gate_prevents_configuration_or_model_work(self) -> None:
+        import argparse
+
+        self.approve()
+        self.set_state("implementing", 1)
+        self.write("checks-0.md", "malformed baseline")
+        args = argparse.Namespace(
+            task_dir=str(self.task), round=1, worktree="none", prepare_routing=False
+        )
+        with patch.object(implement.models, "load") as load:
+            with self.assertRaises(implement.Refusal):
+                implement.prepare(args)
+            load.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

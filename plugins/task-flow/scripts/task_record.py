@@ -148,6 +148,7 @@ class Record:
     acs: list[tuple[str, str]]
     rounds: list[RoundInfo]
     risk_level: str | None = None
+    gate_digest: str | None = None
 
     @property
     def final_verdict(self) -> str:
@@ -444,7 +445,19 @@ def build_record(task_dir: Path, *, risk_enabled: bool = False) -> Record:
         except risk.RiskError as exc:
             raise RecordError("malformed final-round Human attention") from exc
         risk_level = attention["risk"] if attention else None
+    gate_digest = None
+    if (task_dir / "gates.jsonl").exists():
+        import phase_gate
+
+        try:
+            with phase_gate.locked(task_dir):
+                gate_digest = phase_gate.record_digest(task_dir)
+        except (ValueError, OSError) as exc:
+            raise RecordError(
+                "cannot export malformed or unavailable gate evidence"
+            ) from exc
     return Record(
+        gate_digest=gate_digest,
         risk_level=risk_level,
         task_id=task_id,
         goal=goal,
@@ -476,6 +489,10 @@ def render_record(record: Record) -> str:
         "## Acceptance criteria",
         "",
     ]
+    if record.gate_digest is not None:
+        lines.insert(
+            lines.index("## Goal") - 1, f"- gate-log-sha256: {record.gate_digest}"
+        )
     final_results = record.rounds[-1].results
     for acid, text in record.acs:
         lines.append(f"- {acid}: {text} — {final_results[acid]}")

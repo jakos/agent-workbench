@@ -19,3 +19,10 @@ Then follow **The loop**. Update `status.md` after every phase. Stop only at: th
 
 Consult orchestration → **Policy** first: `scripts/policy.py` clamps `--auto`,
 approval, round limits, finish actions, mode and budgets; no file keeps legacy behaviour.
+
+When configured, follow **Enforced transitions when policy is configured**:
+`scripts/phase_gate.py` owns protected status transitions. Use the recorded,
+plan-bound approval, complete baseline evidence before either implementer route and
+include `Task directory: <absolute-task-dir>` in Claude launch prompts. Never infer
+human approval from an automatic prompt turn. Failed external invocations resume in
+the same round; only an explicit separate-terminal human grant permits extra rounds.

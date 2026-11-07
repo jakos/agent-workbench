@@ -18,6 +18,7 @@ chat history; everything another role needs is written to `.work/<task-id>/`.
   plan.md          planner output, format below
   status.md        phase, round, base, branch, worktree, approval, history
   checks-0.md      baseline check results on the untouched base, before round 1
+  gates.jsonl      append-only gate decisions when policy is configured; retained at finish
   checks-<n>.md    automated check results for round n (1..3)
   review-<n>.md    reviewer verdict for round n
   impl-<n>.json    implementer metrics for round n — written by scripts/implement.py
@@ -56,8 +57,8 @@ artifact against the plan.md contract below (`scripts/role_contracts.py`), and p
 only the validated `plan.md` — the orchestrator alone updates `status.md` afterwards.
 
 After `/task-finish` only the `.md` files, the `impl-*.json` files, the `role-*.json`
-files and `worktree/` (if
-kept) remain; any other file or directory in the folder is scratch and is deleted.
+files, `gates.jsonl` and `worktree/` (if kept) remain; any other file or directory in
+the folder is scratch and is deleted.
 
 Source changes happen **in the worktree** when `status.md` names one, otherwise in the
 repository root on the task branch. `.work/` files are always read and written at the
@@ -306,6 +307,17 @@ without partial output. The helper never commits, pushes, opens PRs, contacts mo
 or prunes.
 
 ## Rounds and escalation
+
+When the delivered policy reader reports configured mode, `scripts/phase_gate.py`
+owns phase/round/approval transitions. Follow orchestration.md's enforced-transition
+instructions before the procedural rules below. Its shared checks also run before
+Claude implementer launches, external implementation, script checks and finish.
+`gates.jsonl` records allowed and denied scoped decisions; recording failure refuses
+protected work. Approval binds the plan digest and task attempt, and an explicit
+human grant binds a finite extra-round ceiling to that attempt. Prompt-hook occurrence
+alone supplies no human authorization. Do not bypass a gate refusal by editing status.
+No policy configuration retains legacy behavior. No-progress and circuit-breaker
+stops cannot be overridden by an extra-round grant.
 
 - Round 0 is the baseline check only: the checker runs the plan's verification commands on
   the untouched base and writes `checks-0.md`. No implementer, no reviewer. Failures there

@@ -187,5 +187,58 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(write("/repo/src/x.py"), "deny")
 
 
+from test_phase_gate import MAIN_LAUNCH, UNRELATED_SCRIPT_COMMANDS, GateFixture
+
+
+class WorkflowHookTest(GateFixture):
+    def test_script_mentions_pass_configured_workflow_hook(self) -> None:
+        for tool in ("Bash", "PowerShell"):
+            for command in UNRELATED_SCRIPT_COMMANDS:
+                with self.subTest(tool=tool, command=command):
+                    result = subprocess.run(
+                        [sys.executable, str(GUARD.with_name("phase_gate.py")), "hook"],
+                        input=json.dumps(
+                            {
+                                "cwd": str(self.project),
+                                "tool_name": tool,
+                                "tool_input": {"command": command},
+                            }
+                        ),
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout, "")
+
+    def test_main_session_launch_uses_a_blocking_hook(self) -> None:
+        config = json.loads(
+            (GUARD.parent.parent / "hooks" / "hooks.json").read_text(encoding="utf-8")
+        )
+        self.assertTrue(
+            any(
+                "Agent" in entry.get("matcher", "")
+                for entry in config["hooks"]["PreToolUse"]
+            )
+        )
+        payload = {
+            **MAIN_LAUNCH,
+            "cwd": str(self.project),
+            "tool_input": {
+                "subagent_type": "task-flow:implementer",
+                "prompt": f"Task directory: {self.task}\n",
+            },
+        }
+        result = subprocess.run(
+            [sys.executable, str(GUARD.with_name("phase_gate.py")), "hook"],
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("authorization", result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

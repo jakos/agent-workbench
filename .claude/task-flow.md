@@ -46,6 +46,7 @@ uv run --script plugins/task-flow/tests/test_policy.py
 uvx ruff==0.17.3 check plugins/task-flow/scripts plugins/task-flow/tests plugins/task-flow/bench
 uvx ruff==0.17.3 format --check plugins/task-flow/scripts plugins/task-flow/tests plugins/task-flow/bench
 claude plugin validate .
+uv run --script plugins/task-flow/tests/test_phase_gate.py
 ```
 
 ## Architecture rules
