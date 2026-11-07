@@ -68,7 +68,7 @@ timeout_seconds = 1800
 
 [roles]
 implementer = "codex"
-planner = "claude:sonnet"
+planner = "codex"
 backlog = "claude:sonnet"
 checker = "script"
 reviewer = "claude:sonnet"
