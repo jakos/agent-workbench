@@ -184,10 +184,29 @@ checks-0.md evidence; or `none`>
 2. [suggestion] …
 ## Scope
 <changes outside plan.md's Steps, or "none">
+## Human attention
+risk: low|medium|high
+why: <nonempty single-line explanation>
+- none
 ## Verdict: APPROVED | CHANGES_REQUESTED
 ## Fix list
 1. <one concrete instruction per blocking finding or failing AC>
 ```
+
+The optional `## Human attention` section occurs immediately before the verdict.
+When risk reporting is enabled at the task's recorded base it is required. It has
+exactly one `risk: low|medium|high`, one nonempty single-line `why:`, and either
+`- none` or one to five `- file:line — what to judge` entries. Paths are safe
+repository-relative paths of reviewed current files or deleted base files; lines are
+positive (deleted files use base lines). Missing legacy sections mean unavailable,
+never low. Reviewers may raise the deterministic floor with a reason. Risk is advisory
+and heuristic; it never changes verdicts, approval gates, round limits or stop rules.
+
+Configuration is strict `.claude/task-flow.risk.toml`: `[risk] enabled` is boolean;
+optional additive `[[paths]]` tables contain only repository-relative glob `pattern`
+and `level = "low"|"medium"|"high"`. Unknown keys, wrong types, absolute paths and
+parent traversal are refused. Missing or disabled config preserves prior behavior.
+Configuration is read from the recorded base, so edits apply to subsequent tasks.
 
 Rules: evidence is a file:line, a test name, or command output — never "looks fine". Any
 **introduced** FAIL or ERROR in `checks-<n>.md`, any FAIL criterion, or any blocking
@@ -215,6 +234,11 @@ section is a malformed summary, never silently skipped:
 ## Out of scope
 ```
 
+For enabled tasks, put the current validated risk, why and attention list first within
+`## Goal`, immediately after the summary title and Goal heading. Keep the fixed
+summary headings unchanged. Without a review report unavailable; do not reassess.
+Disabled tasks keep the existing summary instructions.
+
 ## Task records (opt-in, finish-time)
 
 A repository opts in with `.claude/task-flow.records.toml` in the selected worktree (or
@@ -241,6 +265,9 @@ The sources are deterministic and are all read at the repository root's
 - criteria text: the `## Acceptance criteria` section of `plan.md` (`AC<n>: … Verify: …`);
 - AC results and per-round verdicts: the `## Acceptance criteria` table and
   `## Verdict:` of every `review-<n>.md` for rounds 1..round;
+- final-round risk, when reporting applies at the recorded base: the shared
+  attention parser reads `## Human attention` of `review-<round>.md`; absent legacy
+  attention means unavailable, malformed supplied attention is refused;
 - implementer profile/model per round: `impl-<n>.json` (`profile`, `model`; external
   rounds are written by `scripts/implement.py`, Claude rounds by the orchestrator as
   `{"kind": "claude", "profile": "claude", "model": "<model>"}` at implement time when
@@ -252,8 +279,12 @@ The record is one bounded, schema-versioned (`task-record/1`), UTF-8/LF
 scrubbed of file paths, credential URLs, tokens, private keys, secret assignments and
 attribution/session markers, with visible truncation at fixed limits. The trailers are
 `Task-Id`, `Task-Rounds`, repeated `Task-Implementer: <profile>/<model>` for the
-distinct executed pairs, and `Task-Plan-Approved: user|auto`; `Task-Risk` is not
-emitted until a merged risk schema exists. Regeneration is byte-identical; a
+distinct executed pairs, and `Task-Plan-Approved: user|auto`. When risk reporting
+applies at the recorded base and the final round has a valid
+rating, emit exactly one enum-valued `Task-Risk: low|medium|high`. Legacy reviews
+remain renderable with unavailable risk and no risk trailer; malformed supplied
+risk is refused. Only the final risk enum is exported, never unsanitized attention
+prose. Regeneration is byte-identical; a
 conflicting existing record, an unsafe destination or a malformed artifact is refused
 without partial output. The helper never commits, pushes, opens PRs, contacts models
 or prunes.

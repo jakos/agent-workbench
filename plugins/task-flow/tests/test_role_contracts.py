@@ -598,6 +598,58 @@ class ReviewContractTest(unittest.TestCase):
             baseline=baseline,
         )
 
+    def test_risk_is_independent_of_verdict(self) -> None:
+        assessment = {"enabled": True, "floor": "low", "files": {"src/x.py": 2}}
+        for level in ("low", "medium", "high"):
+            text = VALID_REVIEW.replace(
+                "## Verdict:",
+                f"## Human attention\nrisk: {level}\nwhy: Judgement needed.\n- src/x.py:1 — Check intent.\n## Verdict:",
+            )
+            self.assertTrue(
+                role_contracts.validate_review(
+                    text,
+                    round_number=1,
+                    plan=REVIEW_PLAN,
+                    current=self.checks(),
+                    assessment=assessment,
+                )
+            )
+            self.assertFalse(
+                role_contracts.validate_review(
+                    text,
+                    round_number=1,
+                    plan=REVIEW_PLAN,
+                    current=self.checks("FAIL"),
+                    assessment=assessment,
+                )
+            )
+            self.assertFalse(
+                role_contracts.validate_review(
+                    text.replace("| AC1 | PASS", "| AC1 | FAIL"),
+                    round_number=1,
+                    plan=REVIEW_PLAN,
+                    current=self.checks(),
+                    assessment=assessment,
+                )
+            )
+        self.assertFalse(
+            role_contracts.validate_review(
+                VALID_REVIEW,
+                round_number=1,
+                plan=REVIEW_PLAN,
+                current=self.checks(),
+                assessment=assessment,
+            )
+        )
+        self.assertFalse(
+            self.verdict(
+                VALID_REVIEW.replace(
+                    "## Verdict:",
+                    "## Human attention\nrisk: critical\nwhy: Bad.\n- none\n## Verdict:",
+                )
+            )
+        )
+
     def test_approval_requires_consistent_complete_evidence(self) -> None:
         self.assertTrue(self.verdict(VALID_REVIEW))
         for text in [

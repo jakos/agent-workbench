@@ -15,3 +15,9 @@ headings, the proposed commit message and PR text, the local commit, a separate
 question before each step that leaves the machine (push, PR) and before removing the
 worktree. The final prune of `.work/<id>/` to its `.md` and `impl-*.json` files is the
 one deletion that is not asked.
+
+When risk reporting applies at the recorded base, summary `## Goal` and the proposed
+PR description open their substantive content with current-round risk, explanation
+and attention list reused from the validated review. Keep fixed summary headings;
+missing review means unavailable. Disabled reporting keeps existing instructions.
+No reassessment, risk-based stop, new approval gate or publication action is added.

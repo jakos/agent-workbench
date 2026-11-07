@@ -230,10 +230,21 @@ current round is 0 (approved, no round run yet), run **Phase: baseline** instead
 1. Refuse when the current round is 0. Round 0 is the baseline and has no reviewer; tell
    the user to run `/task-flow:task-implement`.
 2. Refuse when `checks-<n>.md` for the current round n >= 1 does not exist.
-3. Resolve `models.py select reviewer --project <repo-root>`. Kind `claude`: set
+3. Resolve `models.py select reviewer --project <repo-root>`. For the Claude route,
+   first run `uv run --quiet --script "${CLAUDE_PLUGIN_ROOT}/scripts/risk.py" assess --repo <repo-root> --task-dir <abs .work/<id>> --worktree <abs worktree | none> --round <n>`.
+   Supply its complete trusted JSON to the reviewer alongside the existing inputs.
+   Configuration is pinned to the recorded base, never the changed worktree. After
+   the Claude review is written run the same command with `validate` instead of
+   `assess`, before interpreting the verdict or advancing phase. Nonzero exit is a
+   resumable artifact/precondition failure: show the diagnostic, do not advance
+   phase, round or verdict; correct the artifact and resume. Disabled configuration
+   is a successful no-op and keeps prior review requirements.
+   Kind `claude`: set
    phase `reviewing` and run `task-flow:reviewer` with the configured Claude model
    override, or its frontmatter default. Kind `profile`: run
    `uv run --quiet --script "${CLAUDE_PLUGIN_ROOT}/scripts/role_run.py" --role reviewer --task-dir <abs .work/<id>> --project <repo-root> --worktree <abs worktree | none> --round <n>`.
+   The external route computes the same trusted risk assessment before contact and
+   requires attention at or above the floor in host validation before publication.
    The runner verifies current-round checks, base, complete inputs and
    `gates.reviewer_independence` before contact. It excludes status Log, implementer
    narratives and earlier reviews. It validates raw review Markdown and permits one
@@ -276,6 +287,12 @@ the round. It is not a stop and not a judgment that the run cannot pass.
 your own judgment. A check that fails every round is not a reason to stop; the no-progress
 rule and the cap handle it. This governs one task's run. The autopilot's circuit breaker is
 not an exception: it runs only between tasks (see Autopilot).
+
+For enabled tasks, escalation summaries keep the fixed summary headings and open
+`## Goal` with the current round's validated risk, explanation and attention list,
+before any other substantive content. If that round has no review report
+`risk: unavailable`, never invent or reassess a rating. Disabled tasks retain the
+existing summary instructions. Risk introduces no additional approval gate or stop.
 
 Escalate: phase `escalated`, write `summary.md` (stop reason — `no progress` or `round
 cap` — goal, what each round changed, which criteria pass, what still fails with the
@@ -668,6 +685,12 @@ All `epics.py` calls run from the repository root:
    `## Out of scope` — goal, what changed (files — including any SDLC status files
    from step 2), how each criterion was verified, rounds taken, anything left out of
    scope.
+   For tasks enabled at their recorded base, put the current validated review's
+   risk, why and attention list first within `## Goal`, immediately after the summary
+   title and Goal heading, before any other substantive content. Reuse the validated
+   review; never ask an agent to reassess. Missing review means unavailable.
+   Keep the six fixed summary headings (title plus five sections) unchanged.
+   Disabled tasks keep the existing summary instructions.
 4. **Task record (opt-in, before the commit).** When the selected worktree (or the
    repository root when `worktree: none`) contains `.claude/task-flow.records.toml`
    with `[records] enabled = true`, run from the repository root, in the background,
@@ -675,7 +698,9 @@ All `epics.py` calls run from the repository root:
    `uv run --quiet --script "${CLAUDE_PLUGIN_ROOT}/scripts/task_record.py" render --repo <abs repository root> --task-dir <abs .work/<id>> --worktree <abs worktree | none>`
    then the same command with `trailers` instead of `render`; its stdout is the
    sanitized trailer block (`Task-Id`, `Task-Rounds`, `Task-Implementer`,
-   `Task-Plan-Approved`, and exactly one `Task-Epic: <epic-id>` when the task is a member
+   `Task-Plan-Approved`, exactly one enum-valued `Task-Risk` when base-pinned risk
+   reporting applies and the final review has a valid rating, and exactly one
+   `Task-Epic: <epic-id>` when the task is a member
    of an epic under `.work/_epics/`; a disabled or non-epic repository is unchanged). Exit 0: continue — stage `docs/tasks/<id>.md` in the
    worktree together with the task's other changes, and append the trailer block once
    at the end of the proposed commit message, after a blank line, keeping the
@@ -689,7 +714,11 @@ All `epics.py` calls run from the repository root:
    commits, pushes, opens a PR, contacts a model or prunes; it reads only the root
    task artifacts listed in SKILL.md → Task records.
 5. Propose a conventional commit message and a PR description built from `summary.md`
-   (plus the trailer block of step 4 when it produced one).
+   (plus the trailer block of step 4 when it produced one). For enabled tasks the
+   proposed PR description opens its substantive content with the same current-round
+   risk, why and attention list from the validated review, before the goal or changes.
+   Without a review report unavailable. Do not reassess risk or add an approval gate.
+   This step proposes text; publication still requires the existing separate question.
 6. Commit on the task branch (in the worktree) — allowed without asking unless the
    config says otherwise — including the staged `docs/tasks/<id>.md` from step 4.
    Show the commit.

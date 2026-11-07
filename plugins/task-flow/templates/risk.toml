@@ -1,0 +1,8 @@
+# Review risk reporting is opt-in; rules are read from the task base.
+[risk]
+enabled = false
+
+# Additive repository-relative glob rules may only raise the default floor.
+# [[paths]]
+# pattern = "src/payments/**"
+# level = "high"

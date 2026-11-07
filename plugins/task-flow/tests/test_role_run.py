@@ -945,11 +945,41 @@ class ReadRolesTest(Base):
         calls = []
         with (
             mock.patch.object(role_run, "git_input", side_effect=self.fake_git),
+            mock.patch.object(
+                role_run.risk,
+                "assess",
+                return_value=getattr(self, "assessment", {"enabled": False}),
+            ),
             mock.patch("autopilot.inspect", return_value="thin: no\n"),
             patch_post(make_urlopen([api_payload(text) for text in outputs], calls)),
         ):
             code = role_run.main(args)
         return code, calls
+
+    def test_enabled_risk_repair_and_atomic_refusal(self) -> None:
+        repo, args = self.reviewer_repo()
+        self.assessment = {
+            "schema": "review-risk/1",
+            "enabled": True,
+            "floor": "high",
+            "files": {"src/x.py": 2},
+        }
+        destination = repo.task / "review-1.md"
+        destination.write_text("existing bytes", encoding="utf-8")
+        low = self.review.replace(
+            "## Verdict:",
+            "## Human attention\nrisk: low\nwhy: Small.\n- none\n## Verdict:",
+        )
+        high = low.replace("risk: low", "risk: high")
+        code, calls = self.execute(args, [self.review, low])
+        self.assertEqual((code, len(calls)), (1, 2))
+        self.assertEqual(destination.read_text(encoding="utf-8"), "existing bytes")
+        code, calls = self.execute(args, [low, high])
+        self.assertEqual((code, len(calls)), (0, 2))
+        self.assertEqual(destination.read_text(encoding="utf-8"), high)
+        prompt = calls[0].data.decode()
+        self.assertIn("trusted review risk floor", prompt)
+        self.assertNotIn("EXCLUDED_NARRATIVE", prompt)
 
     def test_api_backlog_and_envelope(self) -> None:
         _repo, run, args = self.backlog_repo()
@@ -1048,6 +1078,11 @@ class ReadRolesTest(Base):
         calls = []
         with (
             mock.patch.object(role_run, "git_input", side_effect=self.fake_git),
+            mock.patch.object(
+                role_run.risk,
+                "assess",
+                return_value=getattr(self, "assessment", {"enabled": False}),
+            ),
             patch_post(make_urlopen([urllib.error.URLError("unavailable")] * 4, calls)),
         ):
             self.assertEqual(role_run.main(args), 1)
@@ -1214,6 +1249,11 @@ class ReadRolesTest(Base):
         unavailable = urllib.error.URLError("primary unavailable")
         with (
             mock.patch.object(role_run, "git_input", side_effect=self.fake_git),
+            mock.patch.object(
+                role_run.risk,
+                "assess",
+                return_value=getattr(self, "assessment", {"enabled": False}),
+            ),
             patch_post(make_urlopen([unavailable] * 4, calls)),
         ):
             self.assertEqual(role_run.main(args), 1)
@@ -1283,6 +1323,11 @@ class ReadRolesTest(Base):
                     directory = repo.task
                 with (
                     mock.patch.object(role_run, "git_input", side_effect=self.fake_git),
+                    mock.patch.object(
+                        role_run.risk,
+                        "assess",
+                        return_value=getattr(self, "assessment", {"enabled": False}),
+                    ),
                     mock.patch("autopilot.inspect", return_value="thin: no\n"),
                 ):
                     self.assertEqual(role_run.main(args), 0)

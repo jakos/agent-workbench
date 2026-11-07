@@ -28,6 +28,7 @@ from pathlib import Path
 
 import cli_driver
 import models
+import risk
 import role_contracts
 import role_runtime
 from role_runtime import Refusal, log, one_line, redact_record, utc_now
@@ -310,6 +311,12 @@ def prepare_read_role(args: argparse.Namespace) -> Context:
         if not base or base.startswith("-"):
             raise Refusal("status has no resolvable base")
         git_input(ctx.worktree, ["rev-parse", "--verify", f"{base}^{{commit}}"])
+        try:
+            ctx.risk_assessment = risk.assess(
+                ctx.repo_root, ctx.task_dir, ctx.worktree, args.round
+            )
+        except risk.RiskError as exc:
+            raise Refusal(str(exc)) from exc
         ctx.plan = read_required(ctx.task_dir / "plan.md")
         verdict = role_contracts.validate_plan(ctx.plan)
         if not verdict.ok or verdict.blocked:
@@ -344,6 +351,13 @@ def prepare_read_role(args: argparse.Namespace) -> Context:
         ).split("\0")
         paths = sorted(set(filter(None, touched + untracked)))
         ctx.inputs = [("plan.md", ctx.plan), (f"checks-{args.round}.md", checks)]
+        if ctx.risk_assessment["enabled"]:
+            ctx.inputs.append(
+                (
+                    "trusted review risk floor",
+                    json.dumps(ctx.risk_assessment, ensure_ascii=True),
+                )
+            )
         if baseline is not None:
             ctx.inputs.append(("checks-0.md", baseline))
         ctx.inputs.extend([("base diff", diff), ("changed files", "\n".join(paths))])
@@ -653,6 +667,7 @@ def validate(text: str, ctx: Context):
             plan=ctx.plan,
             current=ctx.current_checks,
             baseline=ctx.baseline_checks,
+            assessment=ctx.risk_assessment,
         )
         return verdict.ok, False, verdict.reasons
     verdict = role_contracts.validate_plan(

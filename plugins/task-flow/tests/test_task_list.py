@@ -95,6 +95,51 @@ class TaskListTest(unittest.TestCase):
         ]
         return [row.split("|")[1].strip() for row in rows if "---" not in row]
 
+    def test_current_round_risk_opt_in(self) -> None:
+        for name in ("low", "medium", "high", "legacy", "missing", "bad"):
+            self.add(name, status("new", rnd="2"))
+            task = self.root / ".work" / name
+            (task / "review-1.md").write_text(
+                "## Human attention\nrisk: high\nwhy: Previous.\n- none\n## Verdict: APPROVED",
+                encoding="utf-8",
+            )
+            if name != "missing":
+                text = "# Review: round 2\n## Verdict: APPROVED\n"
+                if name != "legacy":
+                    text = text.replace(
+                        "## Verdict:",
+                        f"## Human attention\nrisk: {name}\nwhy: Current.\n- none\n## Verdict:",
+                    )
+                (task / "review-2.md").write_text(text, encoding="utf-8")
+        disabled = self.out()
+        self.assertNotIn("| risk |", disabled)
+        (self.root / ".claude").mkdir()
+        config = self.root / ".claude/task-flow.risk.toml"
+        config.write_text("[risk]\nenabled=false", encoding="utf-8")
+        self.assertEqual(self.out(), disabled)
+        config.write_text("[risk]\nenabled=true", encoding="utf-8")
+        output = self.out()
+        self.assertIn("| risk |", output)
+        rows = {
+            line.split("|")[1].strip(): line
+            for line in output.splitlines()
+            if line.startswith("| ")
+        }
+        for name, expected in (
+            ("low", "low"),
+            ("medium", "medium"),
+            ("high", "high"),
+            ("legacy", "unavailable"),
+            ("missing", "unavailable"),
+            ("bad", "invalid"),
+        ):
+            self.assertIn(f"| {expected} |", rows[name])
+        self.assertEqual(
+            self.ids(), ["bad", "high", "legacy", "low", "medium", "missing"]
+        )
+        self.add_epic("group", ["high", "low"])
+        self.assertEqual(self.ids("--epic", "group"), ["high", "low"])
+
     def test_hides_done_by_default(self):
         self.add("a", status("done"))
         self.add("b", status("new"))

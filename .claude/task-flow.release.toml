@@ -39,6 +39,7 @@ checks = [
   ["uv", "run", "--script", "plugins/task-flow/tests/test_cli_driver.py"],
   ["uv", "run", "--script", "plugins/task-flow/tests/test_role_run.py"],
   ["uv", "run", "--script", "plugins/task-flow/tests/test_role_contracts.py"],
+  ["uv", "run", "--script", "plugins/task-flow/tests/test_risk.py"],
   ["uvx", "ruff==0.17.3", "check", "plugins/task-flow/scripts", "plugins/task-flow/tests", "plugins/task-flow/bench"],
   ["uvx", "ruff==0.17.3", "format", "--check", "plugins/task-flow/scripts", "plugins/task-flow/tests", "plugins/task-flow/bench"],
   ["claude", "plugin", "validate", "."],
