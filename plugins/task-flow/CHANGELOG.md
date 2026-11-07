@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.14.0 - 2026-11-08
+
+### Features
+
+- feat(task-flow): add delivery metrics with a reproducible baseline (b8df2c5129ce)
+
+- feat(task-flow): enforce the key gates with shared checks and hooks (55df8fb8b048)
+
+- feat(task-flow): add a per-repository autonomy policy (a70ec0ed763b)
+
+- feat(task-flow): add risk flags to reviews for review by exception (9e7e15a37bfe)
+
 ## 0.13.0 - 2026-11-06
 
 ### Features
