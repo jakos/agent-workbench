@@ -30,6 +30,10 @@ DEFAULTS = {
     "budget_usd": None,
     "risk_paths": [],
     "autopilot.mode": "semi",
+    "metrics.enabled": False,
+    "metrics.tag_prefix": "task-flow-",
+    "metrics.weeks": 7,
+    "metrics.incident_path": "",
 }
 PRESETS = {
     "supervised": {},
@@ -63,7 +67,9 @@ def parse(text: str) -> dict:
     except (ValueError, TypeError):
         raise ConfigError("policy: invalid TOML") from None
     # Only display bounded identifier keys; never echo arbitrary paths or values.
-    unknown = set(data) - (set(DEFAULTS) - {"autopilot.mode"} | {"preset", "autopilot"})
+    unknown = set(data) - (
+        {key for key in DEFAULTS if "." not in key} | {"preset", "autopilot", "metrics"}
+    )
     if unknown:
         key = min(unknown)
         label = key if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", key) else "policy"
@@ -74,6 +80,16 @@ def parse(text: str) -> dict:
             raise ConfigError("autopilot: expected only mode")
         if "mode" in table:
             data["autopilot.mode"] = table["mode"]
+    if "metrics" in data:
+        table = data.pop("metrics")
+        if not isinstance(table, dict) or set(table) - {
+            "enabled",
+            "tag_prefix",
+            "weeks",
+            "incident_path",
+        }:
+            raise ConfigError("metrics: unknown key or table")
+        data.update({"metrics." + key: value for key, value in table.items()})
     for key, value in data.items():
         valid = True
         if key == "preset":
@@ -96,6 +112,22 @@ def parse(text: str) -> dict:
         elif key == "risk_paths":
             valid = isinstance(value, list) and all(
                 isinstance(item, str) and risk.safe_path(item) for item in value
+            )
+        elif key == "metrics.enabled":
+            valid = type(value) is bool
+        elif key == "metrics.weeks":
+            valid = type(value) is int and 1 <= value <= 52
+        elif key == "metrics.tag_prefix":
+            valid = (
+                isinstance(value, str)
+                and bool(value)
+                and not any(c in value for c in "\n\r\0")
+            )
+        elif key == "metrics.incident_path":
+            valid = isinstance(value, str) and (
+                value == ""
+                or risk.safe_path(value)
+                and not any(c in value for c in "*?[]")
             )
         if not valid:
             raise ConfigError(

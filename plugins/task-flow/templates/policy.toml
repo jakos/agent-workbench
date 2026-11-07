@@ -15,3 +15,10 @@
 # risk_paths = [] # additive repository-relative globs; no absolute or parent paths
 # [autopilot]
 # mode = "semi" # semi | full; flags may only reduce autonomy
+
+# Delivery reporting is explicit; no automatic publication hook.
+# [metrics]
+# enabled = false
+# tag_prefix = "task-flow-"
+# weeks = 7 # 1..52 contiguous seven-day UTC buckets
+# incident_path = "" # optional repository-relative ledger path

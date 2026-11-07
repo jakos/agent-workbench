@@ -1,2 +1,8 @@
 # Moving to autonomous is a later decision by the user, to be recorded here.
 preset = "gated"
+
+[metrics]
+enabled = false
+tag_prefix = "task-flow-"
+weeks = 7
+incident_path = ""

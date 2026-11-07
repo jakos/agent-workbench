@@ -136,7 +136,7 @@ risk_paths = ["src/private/*"]
 mode = "full"
 """)
         loaded = self.load()
-        self.assertEqual(set(loaded["sources"].values()), {"project"})
+        self.assertEqual(set(loaded["sources"].values()), {"project", "preset:gated"})
         self.assertEqual(
             loaded["values"],
             {
@@ -152,6 +152,10 @@ mode = "full"
                 "budget_usd": 2.5,
                 "risk_paths": ["src/private/*"],
                 "autopilot.mode": "full",
+                "metrics.enabled": False,
+                "metrics.tag_prefix": "task-flow-",
+                "metrics.weeks": 7,
+                "metrics.incident_path": "",
             },
         )
         result = policy.decide("release", loaded, self.project, isolation="active")
@@ -376,6 +380,30 @@ mode = "full"
                         "merge", self.load(), self.project, task_dir=self.task
                     )["allowed"]
                 )
+
+    def test_metrics_table_defaults_merging_and_strict_types(self) -> None:
+        self.assertFalse(self.load()["values"]["metrics.enabled"])
+        self.write(
+            '[metrics]\nenabled = true\nweeks = 4\ntag_prefix = "release-"', user=True
+        )
+        self.write(
+            '[metrics]\nweeks = 7\nincident_path = ".claude/task-flow.incidents.toml"'
+        )
+        loaded = self.load()
+        self.assertEqual(loaded["values"]["metrics.weeks"], 7)
+        self.assertEqual(loaded["sources"]["metrics.weeks"], "project")
+        self.assertEqual(loaded["sources"]["metrics.enabled"], "user")
+        self.assertEqual(loaded["values"]["metrics.tag_prefix"], "release-")
+        for value in (
+            "[metrics]\nother = true",
+            "[metrics]\nweeks = 53",
+            '[metrics]\nenabled = "false"',
+            '[metrics]\nincident_path = "/secret"',
+            '[metrics]\nincident_path = "src/*.toml"',
+        ):
+            self.write(value)
+            with self.assertRaises(policy.ConfigError):
+                self.load()
 
     def test_output_is_versioned_and_safe(self) -> None:
         self.write('preset = "gated"\nrelease = "auto"')

@@ -43,6 +43,7 @@ uv run --script plugins/task-flow/tests/test_role_run.py
 uv run --script plugins/task-flow/tests/test_role_contracts.py
 uv run --script plugins/task-flow/tests/test_risk.py
 uv run --script plugins/task-flow/tests/test_policy.py
+uv run --script plugins/task-flow/tests/test_metrics.py
 uvx ruff==0.17.3 check plugins/task-flow/scripts plugins/task-flow/tests plugins/task-flow/bench
 uvx ruff==0.17.3 format --check plugins/task-flow/scripts plugins/task-flow/tests plugins/task-flow/bench
 claude plugin validate .
