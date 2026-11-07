@@ -32,7 +32,7 @@ The orchestrator owns the header; agents only append under `## Log`.
 - base: <branch or commit the task starts from>
 - branch: task/<id>
 - worktree: .work/<id>/worktree | none
-- plan-approved: no | yes (user, <date>) | yes (--auto, <date>)
+- plan-approved: no | yes (user, <date>) | yes (--auto, <date>) | yes (policy, <date>)
 - last-verdict: none | APPROVED | CHANGES_REQUESTED
 ## History
 - <ISO timestamp> <phase> — <one line>
@@ -42,6 +42,98 @@ The orchestrator owns the header; agents only append under `## Log`.
 After every phase, so any run can resume: **edit the header lines in place** and **append
 one line at the end of `## History`**. Never rewrite the file from memory and never add a
 second `## History` or `## Log` heading — read it, change the lines, keep the rest.
+
+## Policy
+
+### Enforced transitions when policy is configured
+
+These instructions override manual phase/header edits below when `policy.py show`
+reports `configured`. Initialize a new status with
+`uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/phase_gate.py" initialize --task-dir <absolute-task-dir> --base <base>`.
+For every later phase change, use
+`uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/phase_gate.py" transition --task-dir <absolute-task-dir> --to <phase>`;
+add `--round <n>` only when entering implementing. The gate appends transition History;
+use its `note --message <one-line-text>` action for implementer Log lines, including
+BLOCKED evidence. Never rewrite the protected header. The gate preserves other prose.
+
+After planning, transition to planned. Approval uses the same script's `approve`
+action with `--source policy`, only if policy authorizes that specific plan.
+`--source=--auto` is recorded only when policy independently permits automatic
+approval; a model-supplied flag never creates authority. A human approval requires
+the user to run `approve --source user --task-dir <absolute-task-dir>` in a separate
+interactive terminal and type the displayed plan-digest challenge. Do not run that
+human command through model tools. Chat acknowledgement or `UserPromptSubmit`
+occurrence does not establish provenance. The prompt hook captures task context only.
+
+Transition approved to baseline at round 0, using `--worktree .work/<id>/worktree`
+when the worktree was created, or `--worktree none` otherwise. Complete checks-0
+before routing preparation or implementation. Transition to implementing with
+`--round 1`, then checking and reviewing. Both Claude and external routes obey these
+same gates. Every implementer launch prompt must include exactly one line
+`Task directory: <absolute-task-dir>`; context captured from an exact task-run,
+task-check or task-finish command must agree. Do not infer identity from agent_type
+absence, search for a convenient active task or bypass an ambiguous context refusal.
+
+After a validated review, transition to review-approved on APPROVED, escalated on
+no progress or the round cap, or implementing with the next round otherwise.
+BLOCKED evidence permits transition to blocked. An invocation failure stays in the
+same phase and round; repeat the invocation after fixing its precondition.
+For authorized extra rounds, the human runs `grant --source user --ceiling <finite-n>
+--task-dir <absolute-task-dir>` in the separate terminal. A grant is bound to this
+attempt, permits only that ceiling, and cannot bypass no progress or a circuit
+breaker. An escalated round-cap task can then transition to implementing; never reset
+the attempt or silently raise limits.
+
+Before **any** finish side effect (including SDLC refresh, record generation,
+commit or pruning), run `phase_gate.py finish --task-dir <absolute-task-dir>` using
+the same uv invocation. Exit 2 leaves the operation unstarted: report its reason,
+repair evidence and resume. Only a current APPROVED review with complete AC evidence
+and no introduced failures permits finish. Transition to done only after finish;
+prune_task.py repeats its own preflight and retains gates.jsonl. No records opt-in is
+required to retain the audit log. Legacy repositories keep the procedure below.
+
+Before a gate or dispatch, run
+`uv run --quiet --script "${CLAUDE_PLUGIN_ROOT}/scripts/policy.py" show --project <repo-root> --format json`
+and obey `policy/1` values and sources. All policy calls use `--project <repo-root>`;
+pass `--isolation active` only with a known active isolation backend, otherwise
+`--isolation none` (the current default; no backend is implemented here).
+Exit 2 is a precondition refusal: show the exact error, change no phase and fix the
+configuration/backend before resuming. Autonomous or required isolation refuses
+without an active backend. No policy file in either user or project scope means
+legacy behaviour: Finish controls push/pr and `--auto` skips only plan approval as
+today. An explicit supervised file always asks, including with `--auto`.
+
+For each plan, run `policy.py plan-risk --plan <plan.md>` and then
+`policy.py decide plan-approval --plan <plan.md>`. Auto or auto-low-risk with low
+risk records `plan-approved: yes (policy, <date>)`, phase approved, and the preset
+and rating in Log. Before `--auto` skips any approval question, also run
+`policy.py allow-auto --scope plan-approval --plan <plan.md>`; only exit 0 allows
+the skip. Exit 1 means ask approve / edit / cancel and log why (preset, decision,
+rating). With no file, allow-auto preserves `yes (--auto, <date>)`; an explicit
+policy never gains autonomy from the flag. These rules apply to autopilot and epic
+start gates too: query every newly approved plan, ask the combined start question
+if any plan needs approval, and preserve existing approvals. Record policy-approved
+tasks with the policy provenance, including run id in Log.
+
+The round cap is `min(3, max_rounds)`; no-progress remains mandatory and the five
+Stops remain unchanged. Before autopilot creates or resumes a run, take
+`autopilot.mode` as its default. `--semi` may reduce full to semi; refuse `--full`
+when policy mode is semi. Legacy mode keeps the existing flag behaviour.
+`budget_tokens` and `budget_usd` bound command-line budgets: take the smaller
+finite value. Persist the token bound in `budget` and record the resolved USD
+bound in run History; on resume retain the stricter saved/current limits. Before
+dispatch, compare cumulative External USD (including backlog and producer roles)
+with the USD bound; unknown spend cannot establish room under a finite bound.
+Use the existing token budget checks and obey their ordinary budget stop.
+Absent bounds leave command-line budgets unchanged; never increase a saved bound.
+
+With a file, Phase: finish calls `policy.py decide push` and `policy.py decide pr`:
+exit 0 permits the action, exit 1 asks. Policy wins over conflicting Finish values;
+doctor warns. Local commit and remove-worktree still follow Finish. Merge is
+parsed, validated and shown; hook enforcement and PR/merge execution belong to
+other tasks. This task supplies script decisions and mandatory agent instructions.
+Release skips its approval gate only for `policy.py decide release` returning
+`auto (explicit)` (exit 0); every preset and legacy mode asks.
 
 ## Choosing each role's model
 
@@ -128,11 +220,14 @@ subcommand resolves any role with `--override` (`models.py select <role> [--over
    (`impl-*.json` and `role-*.json`), including reviewer usage. Add the column with 0
    cells when needed. Null totals display unknown with known subtotals preserved in
    reports; never increment a prior total on resume.
-4. **Approval gate.** Ask: approve / edit / cancel (with `AskUserQuestion` when
+4. **Approval gate.** Apply Policy (`decide plan-approval` and `allow-auto`) first. When it requires a question, ask: approve / edit / cancel (with `AskUserQuestion` when
    available). Do not continue without an explicit approve. "Edit" means the user's
    changes go into `task.md` as constraints and the planner runs again.
 5. On approve: `plan-approved: yes (user, <date>)`, phase `approved`.
-   With `--auto` only: skip the question, record `yes (--auto, <date>)`, and say so.
+   With `--auto`: run `policy.py allow-auto --scope plan-approval --plan <plan.md>`
+   first; skip only on exit 0. Legacy records `yes (--auto, <date>)`; configured
+   approval records `yes (policy, <date>)` with preset and rating in Log. Exit 1
+   asks anyway and logs why.
    `--auto` skips only this question; it changes nothing else in the run and never permits
    an early stop.
 
@@ -230,10 +325,21 @@ current round is 0 (approved, no round run yet), run **Phase: baseline** instead
 1. Refuse when the current round is 0. Round 0 is the baseline and has no reviewer; tell
    the user to run `/task-flow:task-implement`.
 2. Refuse when `checks-<n>.md` for the current round n >= 1 does not exist.
-3. Resolve `models.py select reviewer --project <repo-root>`. Kind `claude`: set
+3. Resolve `models.py select reviewer --project <repo-root>`. For the Claude route,
+   first run `uv run --quiet --script "${CLAUDE_PLUGIN_ROOT}/scripts/risk.py" assess --repo <repo-root> --task-dir <abs .work/<id>> --worktree <abs worktree | none> --round <n>`.
+   Supply its complete trusted JSON to the reviewer alongside the existing inputs.
+   Configuration is pinned to the recorded base, never the changed worktree. After
+   the Claude review is written run the same command with `validate` instead of
+   `assess`, before interpreting the verdict or advancing phase. Nonzero exit is a
+   resumable artifact/precondition failure: show the diagnostic, do not advance
+   phase, round or verdict; correct the artifact and resume. Disabled configuration
+   is a successful no-op and keeps prior review requirements.
+   Kind `claude`: set
    phase `reviewing` and run `task-flow:reviewer` with the configured Claude model
    override, or its frontmatter default. Kind `profile`: run
    `uv run --quiet --script "${CLAUDE_PLUGIN_ROOT}/scripts/role_run.py" --role reviewer --task-dir <abs .work/<id>> --project <repo-root> --worktree <abs worktree | none> --round <n>`.
+   The external route computes the same trusted risk assessment before contact and
+   requires attention at or above the floor in host validation before publication.
    The runner verifies current-round checks, base, complete inputs and
    `gates.reviewer_independence` before contact. It excludes status Log, implementer
    narratives and earlier reviews. It validates raw review Markdown and permits one
@@ -247,9 +353,9 @@ current round is 0 (approved, no round run yet), run **Phase: baseline** instead
 ## The loop — /task-flow:task-run
 
 ```
-new → plan → approval gate → baseline(0) → for n in 1..3: implement(n) → check(n) → review(n)
+new → plan → approval gate → baseline(0) → for n in 1..min(3, max_rounds): implement(n) → check(n) → review(n)
     APPROVED            → phase review-approved; tell the user to run /task-flow:task-finish
-    CHANGES_REQUESTED   → n = 3: escalate (round cap)
+    CHANGES_REQUESTED   → n = min(3, max_rounds): escalate (round cap)
                           n >= 2: no-progress check first; if it fires, escalate
                           otherwise: next round
 ```
@@ -264,8 +370,8 @@ triggers it.
 ### Stops
 
 The run stops only at: (1) the approval gate, (2) `BLOCKED` from an agent (planner or
-implementer), (3) `APPROVED`, (4) no progress, (5) the round cap (3). `--auto`
-skips the approval gate (recorded as `yes (--auto, <date>)`); the other four stops
+implementer), (3) `APPROVED`, (4) no progress, (5) the round cap (at most 3, lowered by policy). `--auto`
+skips the approval gate only when Policy allows it; the other four stops
 apply identically with and without `--auto`, which never permits an early stop.
 
 A failure or refusal of an external implementer (Phase: implement, step 3d) ends the
@@ -276,6 +382,12 @@ the round. It is not a stop and not a judgment that the run cannot pass.
 your own judgment. A check that fails every round is not a reason to stop; the no-progress
 rule and the cap handle it. This governs one task's run. The autopilot's circuit breaker is
 not an exception: it runs only between tasks (see Autopilot).
+
+For enabled tasks, escalation summaries keep the fixed summary headings and open
+`## Goal` with the current round's validated risk, explanation and attention list,
+before any other substantive content. If that round has no review report
+`risk: unavailable`, never invent or reassess a rating. Disabled tasks retain the
+existing summary instructions. Risk introduces no additional approval gate or stop.
 
 Escalate: phase `escalated`, write `summary.md` (stop reason — `no progress` or `round
 cap` — goal, what each round changed, which criteria pass, what still fails with the
@@ -352,7 +464,7 @@ completed, and that the `## Tasks` table matches the epic's rows and dependencie
    stop of the run: no run folder exists yet. Remember `thin` for Decompose. Ensure
    `.work/.gitignore` as in Phase: new.
 2. **Gather.** Run id = 3–6 word kebab slug, `-2`, `-3` on collision. Create
-   `.work/_autopilot/<run-id>/run.md` (state `gathering`, mode `semi` unless `--full`,
+   `.work/_autopilot/<run-id>/run.md` (state `gathering`, mode from Policy (legacy: `semi` unless `--full`),
    budget from `--budget` or `none`, `budget-scope` from `--budget-scope claude|all`
    or `claude`, `backlog-usd: 0`, `planning-tokens: 0`, `continue-past: none`,
    `bootstrap: none`, base = current branch). Resolve the roles once with
@@ -423,13 +535,16 @@ completed, and that the `## Tasks` table matches the epic's rows and dependencie
    History as `- <timestamp> routing-preview <JSON>`. These versioned digest records
    describe the shown overview, never approval or an attempt pin. Use task-aware
    per-task selections; the taskless implementer kind is only a legacy estimate fallback.
-6. **Start gate.** Ask start / edit / cancel. Start: in every task's `status.md` set
+6. **Start gate.** Consult Policy for every plan, including `allow-auto` before
+   any `--auto` skip. If a question is required, ask start / edit / cancel. Start: in every task's `status.md` set
    `plan-approved: yes (user, <date>, autopilot <run-id>)` and phase `approved`. Edit: the
    change goes into that task's `task.md` (or `requirements.md` for backlog changes),
    re-plan or re-decompose, show the overview again; an edit that re-plans the bootstrap
    task re-plans every later task after it, so they keep reading its current `plan.md`.
-   With `--auto` only: skip the question, record `yes (--auto, <date>, autopilot
-   <run-id>)` and say so. State `running`.
+   With `--auto`, skip only when `allow-auto` returns yes for every plan.
+   Legacy records `yes (--auto, <date>, autopilot <run-id>)`; configured policy
+   records `yes (policy, <date>)` with preset, rating and run id in Log. Otherwise
+   ask and log why. State `running` only after approval.
 7. **Loop (between tasks).** Each iteration, run
    `uv run --quiet --script "${CLAUDE_PLUGIN_ROOT}/scripts/models.py" roles --project <repo-root>`
    (exit 2: show its stderr and end the command without changing `run.md` — a
@@ -519,14 +634,15 @@ State `planning`, then `ready`.
 marked; the `warning:` line of `autopilot.py estimate` (more than 10 tasks) is shown
 verbatim; Edit re-plans only that task — changing the list means cancel and start
 again; Start approves the tasks that are not `approved` yet with
-`yes (user, <date>, autopilot <run-id>)` (or `yes (--auto, <date>, autopilot <run-id>)`),
+`yes (user, <date>, autopilot <run-id>)`, legacy `yes (--auto, <date>, autopilot <run-id>)`,
+or `yes (policy, <date>)` as decided by Policy (preset, rating and run id in Log),
 while tasks already `approved` keep their `plan-approved` line.
 (g) Failure handling is the unchanged `next`: because every row depends on the previous
 one, `--full` skips every task after a failed one (`stop: cannot finish: ...`), and in
 `--semi` choosing "continue past it" also ends in `stop: cannot finish`. Documented,
 not special-cased.
 
-**Stops of an autopilot run:** the start gate (skipped by `--auto`), backlog or planner
+**Stops of an autopilot run:** the start gate (skipped by `--auto` only when Policy allows), backlog or planner
 `BLOCKED` before the loop, `wait` (semi), `stop:` (circuit breaker), `done`, and the pause
 after a failed external implementer round (exit 1 or 2; a defined rule, with and without
 `--auto`, because `next` would return `run <id>` for the same task again). The no-commit
@@ -597,7 +713,7 @@ All `epics.py` calls run from the repository root:
    `epic: <epic-id>`, and the `## Tasks` table **generated from the epic's graph** (same
    rows, same `Depends on` cells) — never edited by hand. Then run steps 5–8 of Autopilot
    unchanged: role resolution, `estimate` (with `--planner-kind`), the overview, the
-   start gate (`--auto` skips
+   start gate (Policy decides whether `--auto` skips
    only that question), the `next`-driven loop and `report.md`. A `--planner <profile>`
    given to `task-epic run` is passed to every newly planned member task as in Autopilot
    step 4. The same epic id always
@@ -668,6 +784,12 @@ All `epics.py` calls run from the repository root:
    `## Out of scope` — goal, what changed (files — including any SDLC status files
    from step 2), how each criterion was verified, rounds taken, anything left out of
    scope.
+   For tasks enabled at their recorded base, put the current validated review's
+   risk, why and attention list first within `## Goal`, immediately after the summary
+   title and Goal heading, before any other substantive content. Reuse the validated
+   review; never ask an agent to reassess. Missing review means unavailable.
+   Keep the six fixed summary headings (title plus five sections) unchanged.
+   Disabled tasks keep the existing summary instructions.
 4. **Task record (opt-in, before the commit).** When the selected worktree (or the
    repository root when `worktree: none`) contains `.claude/task-flow.records.toml`
    with `[records] enabled = true`, run from the repository root, in the background,
@@ -675,7 +797,9 @@ All `epics.py` calls run from the repository root:
    `uv run --quiet --script "${CLAUDE_PLUGIN_ROOT}/scripts/task_record.py" render --repo <abs repository root> --task-dir <abs .work/<id>> --worktree <abs worktree | none>`
    then the same command with `trailers` instead of `render`; its stdout is the
    sanitized trailer block (`Task-Id`, `Task-Rounds`, `Task-Implementer`,
-   `Task-Plan-Approved`, and exactly one `Task-Epic: <epic-id>` when the task is a member
+   `Task-Plan-Approved`, exactly one enum-valued `Task-Risk` when base-pinned risk
+   reporting applies and the final review has a valid rating, and exactly one
+   `Task-Epic: <epic-id>` when the task is a member
    of an epic under `.work/_epics/`; a disabled or non-epic repository is unchanged). Exit 0: continue — stage `docs/tasks/<id>.md` in the
    worktree together with the task's other changes, and append the trailer block once
    at the end of the proposed commit message, after a blank line, keeping the
@@ -689,12 +813,18 @@ All `epics.py` calls run from the repository root:
    commits, pushes, opens a PR, contacts a model or prunes; it reads only the root
    task artifacts listed in SKILL.md → Task records.
 5. Propose a conventional commit message and a PR description built from `summary.md`
-   (plus the trailer block of step 4 when it produced one).
+   (plus the trailer block of step 4 when it produced one). For enabled tasks the
+   proposed PR description opens its substantive content with the same current-round
+   risk, why and attention list from the validated review, before the goal or changes.
+   Without a review report unavailable. Do not reassess risk or add an approval gate.
+   This step proposes text; publication still requires the existing separate question.
 6. Commit on the task branch (in the worktree) — allowed without asking unless the
    config says otherwise — including the staged `docs/tasks/<id>.md` from step 4.
    Show the commit.
-7. **Ask** before each of: push, open a PR, remove the worktree. Do only what is
-   confirmed, or what `.claude/task-flow.md → finish` allows without asking.
+7. With a policy file, call `policy.py decide push` and `policy.py decide pr`
+   with the project and isolation arguments from Policy. Exit 0 permits the action;
+   exit 1 asks first; exit 2 refuses. Without a file, use Finish as today.
+   Ask before removing the worktree unless Finish allows it.
 8. Phase `done`.
 9. **Prune** (not asked): from the repository root run
    `uv run --quiet --script "${CLAUDE_PLUGIN_ROOT}/scripts/prune_task.py" .work/<id>` and
@@ -729,9 +859,12 @@ live in `.claude/task-flow.release.toml` (override with `--config <path>`).
 4. **Dry run** (only when `$ARGUMENTS` has `--dry-run`): run
    `release.py apply $ARGUMENTS` with `--dry-run`, show its output, and end. A dry run
    asks nothing.
-5. **Approval gate — always asked, no `--auto`.** Show current → new version and the
-   bump, the files that change, the changelog entry, the commit message and the tag; ask
-   approve / edit / cancel. Edit version: remember that explicit `<version>` and re-run
+5. **Approval gate — explicit policy only, no `--auto`.** Call
+   `policy.py decide release` with project and isolation arguments from Policy.
+   Skip the question only on exit 0 with `auto (explicit)`; log that explicit
+   source. Exit 1 asks; exit 2 refuses. Show current → new version and the
+   bump, the files that change, the changelog entry, the commit message and the tag.
+   When exit 1 requires a question, ask approve / edit / cancel. Edit version: remember that explicit `<version>` and re-run
    step 2 with it (replacing any version or `--major` / `--minor` / `--patch` in
    `$ARGUMENTS`). Edit entry: write the edited entry to
    `.work/_release/<target>-entry.md` (`.work/` is ignored, so the tree stays clean)
@@ -775,7 +908,7 @@ overview and returns through the existing start gate; a pinned incompatible atte
 refuses and requires restoration or an explicitly authorized restart/retry.
 
 Keep ordinary approval, phase, round, three-round/no-progress and failure/resume
-handling unchanged. `--auto` skips only existing questions. Pass the task-aware selected
+handling unchanged. `--auto` skips only existing questions when Policy allows it. Pass the task-aware selected
 starting profile to `implement.py`; it validates the pin before model contact and
 publishes selection only after successful preflight. Actual fallback profiles and
 nullable costs remain in round evidence; never reset or double-count External USD

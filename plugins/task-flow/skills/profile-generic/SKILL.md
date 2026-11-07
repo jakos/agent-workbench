@@ -33,3 +33,16 @@ exist — they are what will judge the change later anyway.
 - Errors handled the way the surrounding code handles them.
 - No unrelated changes: formatting sweeps, renames, dependency bumps the plan did not ask
   for.
+
+
+### Review risk (opt-in)
+
+Use the shared `scripts/risk.py` assessment, never a lower rating. Defaults are
+advisory heuristics: medium at 300 changed lines or 10 files; high at 1,000 lines or
+30 files. Security/authentication, hooks, rules.py, CI, release, migration and
+deployment paths are high. Added dependencies, deleted tests/removed assertions,
+changed skips/expected failures and reduced coverage thresholds are medium. Added
+secret-like values and binary or uninspectable content are high. Additive custom
+path rules can only raise these defaults. These explicit path and line patterns do
+not prove semantic test strength or safety. Explain raised ratings and name up to
+five safe file:line locations needing human judgement; deleted files use base lines.

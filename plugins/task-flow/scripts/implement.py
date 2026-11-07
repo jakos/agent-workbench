@@ -650,6 +650,17 @@ def prepare(args) -> Context:
     if not approved(ctx.files[ctx.task_dir / "status.md"]):
         raise Refusal("status.md does not say plan-approved: yes")
 
+    import phase_gate
+
+    try:
+        phase_gate.decide(
+            ctx.task_dir,
+            "prepare" if args.prepare_routing else "implement",
+            number=ctx.round,
+        )
+    except (phase_gate.Refusal, phase_gate.policy.ConfigError) as exc:
+        raise Refusal(str(exc)) from exc
+
     if args.worktree == "none":
         ctx.worktree = ctx.repo_root
     else:

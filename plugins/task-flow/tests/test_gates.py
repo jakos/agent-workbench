@@ -416,5 +416,28 @@ class GatesTest(unittest.TestCase):
         self.assertIn("'%'", text)
 
 
+from test_phase_gate import GateFixture
+
+
+class WorkflowPreflightTest(GateFixture):
+    def test_denied_baseline_and_check_execute_no_commands(self) -> None:
+        import argparse
+        from unittest.mock import patch
+
+        for number, phase in ((0, "baseline"), (1, "checking")):
+            self.set_state(phase, number)
+            args = argparse.Namespace(
+                task_dir=str(self.task),
+                worktree="none",
+                round=number,
+                timeout_seconds=1,
+            )
+            with patch.object(gates, "run_line") as run_line:
+                with self.assertRaises(gates.Refusal):
+                    gates.run(args)
+                run_line.assert_not_called()
+                self.assertFalse((self.task / f"checks-{number}.md").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

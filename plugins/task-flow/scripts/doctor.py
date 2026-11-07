@@ -75,9 +75,13 @@ Local checks, in fixed order (each is a plain function; every input is an argume
  12. models.toml           models.load(project) -> PASS naming the files found (user,
                           project, or "none: every role is Claude"); ConfigError -> FAIL
                           with its message (file and key path) and the template as the
-                          fix. Checks 13-14 do not run then.
- 13. roles                 one PASS row listing models.resolve_roles().
- 14. implementer profiles  only when [roles] implementer names a profile: one row per
+                          fix. Checks 14-15 do not run then.
+ 13. policy.toml           policy.load(project, home) -> PASS absent (legacy) or preset
+                          and per-key sources from policy.table; ConfigError -> FAIL
+                          with exact error and template fix; conflicting Finish push/pr
+                          -> WARN "policy wins over .claude/task-flow.md -> Finish".
+ 14. roles                 one PASS row listing models.resolve_roles().
+ 15. implementer profiles  only when [roles] implementer names a profile: one row per
                           aspect for the primary and for each name in its fallback list:
                           - enabled = false: FAIL on the primary (implement.py refuses
                             it), WARN on a fallback (skipped);
@@ -116,7 +120,7 @@ the profile's method (`api` or `cli`), model and billing, and each of its fallba
 its own `... fallback <name>` row. The stage table inspects the configuration only: no
 CLI is executed and no request is sent, so it spends no model capacity.
 
-Online check (only with --online, only for the enabled API-driver profiles of check 14
+Online check (only with --online, only for the enabled API-driver profiles of check 15
 that have their key or need none; driver "cli" profiles are never online targets):
 GET {base_url}/models with the driver's auth headers
 (Authorization: Bearer <key> on openai-loop; x-api-key and anthropic-version on
@@ -134,6 +138,8 @@ so it runs on macOS, Linux and Windows without Git Bash. LF line endings; text r
 written as UTF-8 explicitly; git through subprocess with an argument list and a timeout.
 """
 
+from __future__ import annotations
+
 import argparse
 import difflib
 import json
@@ -142,6 +148,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -151,6 +158,160 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import models
+import policy
+
+
+def check_hooks(plugin_root: Path) -> Check:
+    """Configuration inspection is never runtime hook-loading evidence."""
+    try:
+        hooks = json.loads(
+            (plugin_root / "hooks" / "hooks.json").read_text(encoding="utf-8")
+        )["hooks"]
+        if not any(
+            "Agent" in group.get("matcher", "").split("|")
+            and any(
+                "phase_gate.py" in " ".join(h.get("args", [])) for h in group["hooks"]
+            )
+            for group in hooks.get("PreToolUse", [])
+        ):
+            raise ValueError("launch matcher missing")
+        for event in ("PreToolUse", "UserPromptSubmit"):
+            handlers = [
+                h
+                for group in hooks[event]
+                for h in group["hooks"]
+                if "phase_gate.py" in " ".join(h.get("args", []))
+            ]
+            if (
+                len(handlers) != 1
+                or handlers[0].get("command") != "uv"
+                or handlers[0].get("args")
+                != [
+                    "run",
+                    "--quiet",
+                    "--script",
+                    "${CLAUDE_PLUGIN_ROOT}/scripts/phase_gate.py",
+                    "hook",
+                ]
+                or handlers[0].get("onFailure") != "block"
+            ):
+                raise ValueError("missing fail-closed handler")
+        if not (plugin_root / "scripts" / "phase_gate.py").is_file():
+            raise ValueError("missing handler script")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return Check(
+            "workflow hook configuration",
+            "FAIL",
+            "missing or broken configuration/handler",
+            [
+                "Restore hooks/hooks.json and scripts/phase_gate.py; restart Claude Code."
+            ],
+        )
+    return Check(
+        "workflow hook configuration",
+        "PASS",
+        "configuration found; runtime firing unverified",
+    )
+
+
+def hook_probe(plugin_root: Path, fixture_root: Path) -> list[Check]:
+    """Explicit, temporary-fixture probe: launches only the Python handler, no model."""
+    import phase_gate
+
+    project = fixture_root / "project"
+    home = fixture_root / "home"
+    home.mkdir(parents=True)
+    config = project / policy.CONFIG
+    config.parent.mkdir(parents=True)
+    config.write_text('plan_approval = "auto"\n', encoding="utf-8")
+    plan = """# Plan: Hook firing fixture
+## Goal
+Check a temporary fixture only.
+## Context
+No real task or source changes.
+## Profiles
+generic: fixture.txt
+## Steps
+1. Inspect fixture.txt (generic).
+## Acceptance criteria
+AC1: The probe runs. Verify: test_probe
+## Verification commands
+```
+python -V
+```
+## Project rules
+Never edit anything outside this temporary fixture.
+## Out of scope
+All implementation work.
+## Risks / open questions
+plan-risk: low
+"""
+    tasks = []
+    for name in ("allowed", "denied"):
+        task = project / ".work" / name
+        task.mkdir(parents=True)
+        (task / "plan.md").write_text(plan, encoding="utf-8")
+        (task / "status.md").write_text(
+            f"# Status: {name}\n- phase: planned\n- round: 0\n- base: fixture\n- branch: task/{name}\n- worktree: none\n- plan-approved: no\n- last-verdict: none\n## History\n- fixture\n## Log\n",
+            encoding="utf-8",
+        )
+        tasks.append(task)
+    phase_gate.decide(tasks[0], "approve", home=home)
+    phase_gate.decide(tasks[0], "transition", target="baseline", home=home)
+    (tasks[0] / "checks-0.md").write_text(
+        "# Checks: round 0\n| 1 | `python -V` | PASS | 0 | 1s |\n## Failures\nnone\n## Not run\nnone\n",
+        encoding="utf-8",
+    )
+    phase_gate.decide(
+        tasks[0], "transition", target="implementing", number=1, home=home
+    )
+    env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home)}
+    results = []
+    for task in tasks:
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "cwd": str(project),
+            "session_id": "doctor-fixture",
+            "tool_name": "Agent",
+            "tool_input": {
+                "subagent_type": "task-flow:implementer",
+                "prompt": f"Task directory: {task}\n",
+                "description": "fixture",
+            },
+        }
+        proc = subprocess.run(
+            [sys.executable, str(plugin_root / "scripts" / "phase_gate.py"), "hook"],
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            env=env,
+            timeout=15,
+            check=False,
+        )
+        results.append(proc.returncode)
+    unrelated = phase_gate.hook(
+        {"cwd": str(project), "tool_name": "Read", "tool_input": {}}, home=home
+    )
+    success = results == [0, 2] and unrelated is None
+    return [
+        Check(
+            "workflow handler direct probe",
+            "PASS" if success else "FAIL",
+            "handler invoked directly: allowed and denied fixtures; no hook loading proven"
+            if success
+            else "handler did not produce expected decisions",
+            [] if success else ["Restore the handler and rerun --hook-probe."],
+        ),
+        Check(
+            "workflow runtime firing",
+            "WARN",
+            "unverified: no Claude Code tool event observed",
+            [
+                "Run manual hook-firing in docs/task-flow/enforcement.md in an available session."
+            ],
+        ),
+    ]
+
 
 GIT_TIMEOUT_SECONDS = 30
 ONLINE_TIMEOUT_CAP_SECONDS = 20
@@ -682,6 +843,38 @@ def check_models(project_root: Path) -> tuple[Check, dict | None, dict | None]:
     return (Check("models.toml", "PASS", detail), profiles, roles)
 
 
+def check_policy(project_root: Path, home: Path) -> Check:
+    try:
+        loaded = policy.load(project_root, home)
+        if loaded["mode"] == "legacy":
+            return Check("policy.toml", "PASS", "absent: legacy behaviour (supervised)")
+        detail = policy.table(loaded)
+        finish = policy.finish_settings(project_root)
+        if any(
+            finish[key] != loaded["values"][key]
+            for key in ("push", "pr")
+            if key in finish
+        ):
+            return Check(
+                "policy.toml",
+                "WARN",
+                "policy wins over .claude/task-flow.md -> Finish; " + detail,
+                [
+                    "fix: align Finish push/pr with policy, or remove the conflicting Finish setting"
+                ],
+            )
+        return Check("policy.toml", "PASS", detail)
+    except policy.ConfigError as exc:
+        return Check(
+            "policy.toml",
+            "FAIL",
+            str(exc),
+            [
+                "fix: correct the policy key using plugins/task-flow/templates/policy.toml"
+            ],
+        )
+
+
 def check_roles(resolved: dict) -> Check:
     parts = []
     for role in sorted(resolved):
@@ -929,7 +1122,7 @@ def check_implementer_profiles(
     profiles: dict,
     roles: dict,
     env: dict,
-    user_env_lookup: Callable[[str], "str | None"],
+    user_env_lookup: Callable[[str], str | None],
     which: Which = shutil.which,
 ) -> tuple[list[Check], list[tuple[str, dict]]]:
     """Rows for the primary implementer profile and each of its fallbacks.
@@ -1165,7 +1358,7 @@ def cell(text: str) -> str:
 def render(
     checks: list[Check],
     secrets: list[str],
-    stages: "list[tuple[str, str, str, str]] | None" = None,
+    stages: list[tuple[str, str, str, str]] | None = None,
 ) -> str:
     lines = ["# task-flow doctor", "| # | Check | Result | Detail |"]
     for number, check in enumerate(checks, 1):
@@ -1210,6 +1403,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="also GET <base_url>/models once per profile in use (no tokens)",
     )
+    parser.add_argument(
+        "--hook-probe",
+        action="store_true",
+        help="invoke only the handler on temporary fixtures, without models",
+    )
+    parser.add_argument(
+        "--hook-fixture",
+        action="store_true",
+        help="retain a temporary fixture for the named manual hook-firing check",
+    )
     args = parser.parse_args(argv)
     if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -1243,6 +1446,16 @@ def main(argv: list[str] | None = None) -> int:
     checks.append(check_anthropic_key(env))
     models_check, profiles, roles = check_models(project)
     checks.append(models_check)
+    checks.append(check_policy(project, home))
+    if args.hook_fixture:
+        fixture = Path(tempfile.mkdtemp(prefix="task-flow-hook-"))
+        checks += hook_probe(plugin_root, fixture)
+        checks.append(
+            Check("manual hook-firing fixture", "PASS", str(fixture / "project"))
+        )
+    elif args.hook_probe:
+        with tempfile.TemporaryDirectory(prefix="task-flow-hook-") as fixture:
+            checks += hook_probe(plugin_root, Path(fixture))
     stages = None
     if profiles is not None and roles is not None:
         resolved = models.resolve_roles(project)
@@ -1258,6 +1471,7 @@ def main(argv: list[str] | None = None) -> int:
                     profile["request_timeout_seconds"], ONLINE_TIMEOUT_CAP_SECONDS
                 )
                 checks.append(check_online(profile_name, profile, env, timeout))
+    checks.append(check_hooks(plugin_root))
     secrets = secret_values(
         env, [profile.get("api_key_env") for profile in (profiles or {}).values()]
     )

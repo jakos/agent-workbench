@@ -43,7 +43,7 @@ refused (exit 2) before any output.
   <profile>/<model>` for the distinct executed pairs, `Task-Plan-Approved:
   user|auto`, and — when the task is a member of an epic (`.work/_epics/<epic-id>/`) —
   exactly one `Task-Epic: <epic-id>` (the open epic, else the most recently completed
-  one). `Task-Risk` is not emitted while no merged risk schema exists. Values
+  one). `Task-Risk` is emitted only for enabled, valid final-round ratings. Values
   are validated single-line metadata without control characters.
 
 Exit codes: 0 success (or disabled no-op); 2 refusal — invalid config, malformed or
@@ -63,6 +63,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import epics
+import risk
 
 CONFIG_RELPATH = Path(".claude") / "task-flow.records.toml"
 RECORDS_RELPATH = Path("docs") / "tasks"
@@ -146,6 +147,8 @@ class Record:
     omitted_scope: str
     acs: list[tuple[str, str]]
     rounds: list[RoundInfo]
+    risk_level: str | None = None
+    gate_digest: str | None = None
 
     @property
     def final_verdict(self) -> str:
@@ -390,7 +393,7 @@ def implementer_pair(task_dir: Path, n: int) -> tuple[str, str]:
     return profile, model
 
 
-def build_record(task_dir: Path) -> Record:
+def build_record(task_dir: Path, *, risk_enabled: bool = False) -> Record:
     status = read_text(task_dir / "status.md", "status.md")
     plan = read_text(task_dir / "plan.md", "plan.md")
     summary = read_text(task_dir / "summary.md", "summary.md")
@@ -433,7 +436,29 @@ def build_record(task_dir: Path) -> Record:
     clean_acs = [
         (acid, one_line(text, MAX_AC_CHARS, f"plan.md {acid}")) for acid, text in acs
     ]
+    risk_level = None
+    if risk_enabled:
+        try:
+            attention = risk.parse_attention(
+                read_text(task_dir / f"review-{round_n}.md", "final review")
+            )
+        except risk.RiskError as exc:
+            raise RecordError("malformed final-round Human attention") from exc
+        risk_level = attention["risk"] if attention else None
+    gate_digest = None
+    if (task_dir / "gates.jsonl").exists():
+        import phase_gate
+
+        try:
+            with phase_gate.locked(task_dir):
+                gate_digest = phase_gate.record_digest(task_dir)
+        except (ValueError, OSError) as exc:
+            raise RecordError(
+                "cannot export malformed or unavailable gate evidence"
+            ) from exc
     return Record(
+        gate_digest=gate_digest,
+        risk_level=risk_level,
         task_id=task_id,
         goal=goal,
         approval=approval,
@@ -455,7 +480,7 @@ def render_record(record: Record) -> str:
         f"- approval: {record.approval}",
         f"- rounds: {len(record.rounds)}",
         f"- final-verdict: {record.final_verdict}",
-        f"- risk: {RISK_TEXT}",
+        f"- risk: {record.risk_level or RISK_TEXT}",
         "",
         "## Goal",
         "",
@@ -464,6 +489,10 @@ def render_record(record: Record) -> str:
         "## Acceptance criteria",
         "",
     ]
+    if record.gate_digest is not None:
+        lines.insert(
+            lines.index("## Goal") - 1, f"- gate-log-sha256: {record.gate_digest}"
+        )
     final_results = record.rounds[-1].results
     for acid, text in record.acs:
         lines.append(f"- {acid}: {text} — {final_results[acid]}")
@@ -494,6 +523,8 @@ def validate_trailer_value(key: str, value: str) -> None:
         raise RecordError("trailer Task-Rounds: value is not a number; refusing")
     if key == "Task-Plan-Approved" and value not in APPROVALS:
         raise RecordError("trailer Task-Plan-Approved: value must be user or auto")
+    if key == "Task-Risk" and value not in risk.LEVELS:
+        raise RecordError("trailer Task-Risk: value must be low, medium or high")
     if key == "Task-Epic" and not TASK_ID_RE.match(value):
         raise RecordError("trailer Task-Epic: value is not a valid epic id; refusing")
     if key == "Task-Implementer":
@@ -507,7 +538,7 @@ def validate_trailer_value(key: str, value: str) -> None:
 
 
 def render_trailers(record: Record, epic_id: str | None = None) -> list[str]:
-    """The sanitized trailer block; `Task-Risk` is absent until a risk schema merges.
+    """The sanitized trailer block; `Task-Risk` is emitted only for enabled, valid final-round ratings.
 
     A member task gets exactly one `Task-Epic: <epic-id>` trailer; a task outside every
     epic gets none, and a disabled repository gets no trailers at all.
@@ -518,6 +549,8 @@ def render_trailers(record: Record, epic_id: str | None = None) -> list[str]:
     ]
     entries += [("Task-Implementer", pair) for pair in record.implementer_pairs()]
     entries.append(("Task-Plan-Approved", record.approval))
+    if record.risk_level is not None:
+        entries.append(("Task-Risk", record.risk_level))
     if epic_id is not None:
         entries.append(("Task-Epic", epic_id))
     lines = []
@@ -670,7 +703,25 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(f"disabled: {config} does not enable records; nothing to do")
             return 0
-        record = build_record(task_dir)
+        # Resolve reporting from base configuration before interpreting review risk.
+        status = read_text(task_dir / "status.md", "status.md")
+        _, round_n, _ = parse_status(status, task_dir.name)
+        try:
+            base = risk.metadata(repo, task_dir, out_repo, round_n)
+        except risk.RiskError as exc:
+            if any((root / risk.CONFIG).exists() for root in (out_repo, repo)):
+                raise RecordError(
+                    "cannot resolve base-pinned risk configuration"
+                ) from exc
+            risk_enabled = False
+        else:
+            try:
+                risk_enabled = risk.base_config(out_repo, base)["enabled"]
+            except risk.RiskError as exc:
+                raise RecordError(
+                    "cannot resolve base-pinned risk configuration"
+                ) from exc
+        record = build_record(task_dir, risk_enabled=risk_enabled)
         try:
             epic_id = epics.epic_for_task(repo, record.task_id)
             broken = epics.broken_epic_ids(repo)

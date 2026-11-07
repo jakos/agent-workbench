@@ -226,7 +226,8 @@ class ScriptTest(DoctorTest):
         self.assertIn("models", imported)
         for module in imported:
             self.assertTrue(
-                module in sys.stdlib_module_names or module == "models",
+                module in sys.stdlib_module_names
+                or module in {"models", "policy", "phase_gate", "__future__"},
                 f"non-stdlib import: {module}",
             )
 
@@ -994,6 +995,54 @@ class ChangesNothingTest(DoctorTest):
         self.assertEqual(dict(os.environ), before_env)
 
 
+class PolicyDiagnosticsTest(DoctorTest):
+    def test_absent_and_valid(self) -> None:
+        row = doctor.check_policy(self.repo, self.home)
+        self.assertEqual(row.result, "PASS")
+        self.assertEqual(row.detail, "absent: legacy behaviour (supervised)")
+        self.write(".claude/task-flow.policy.toml", 'preset = "gated"')
+        row = doctor.check_policy(self.repo, self.home)
+        self.assertEqual(row.result, "PASS")
+        self.assertIn("gated", row.detail)
+        self.assertIn("[preset:gated]", row.detail)
+        self.write(".claude/task-flow.policy.toml", 'push = "ask"')
+        self.assertIn("[project]", doctor.check_policy(self.repo, self.home).detail)
+
+    def test_invalid_and_conflicts(self) -> None:
+        self.write(".claude/task-flow.policy.toml", "max_rounds = 4")
+        row = doctor.check_policy(self.repo, self.home)
+        self.assertEqual(row.result, "FAIL")
+        self.assertIn("max_rounds", row.detail)
+        self.assertTrue(row.fixes)
+        for finish, setting in (("ask", "auto"), ("yes", "ask")):
+            for action in ("push", "pr"):
+                self.write(".claude/task-flow.policy.toml", f'{action} = "{setting}"')
+                self.write(".claude/task-flow.md", f"## Finish\n- {action}: {finish}\n")
+                row = doctor.check_policy(self.repo, self.home)
+                self.assertEqual(row.result, "WARN")
+                self.assertIn(
+                    "policy wins over .claude/task-flow.md -> Finish", row.detail
+                )
+                self.assertTrue(row.fixes)
+
+    def test_fixed_row_order(self) -> None:
+        self.init_repo()
+        self.commit()
+        _, out, _ = self.run_doctor(["--project", str(self.repo)])
+        rows = [
+            [cell.strip() for cell in line.split("|")[1:3]]
+            for line in out.splitlines()
+            if " | models.toml |" in line
+            or " | policy.toml |" in line
+            or " | roles |" in line
+        ]
+        self.assertEqual(
+            [row[1] for row in rows], ["models.toml", "policy.toml", "roles"]
+        )
+        first = int(rows[0][0])
+        self.assertEqual([int(row[0]) for row in rows], [first, first + 1, first + 2])
+
+
 class RoutingDiagnosticsTest(unittest.TestCase):
     def test_taskless_routing_is_explicitly_unresolved(self) -> None:
         result = doctor.check_roles(
@@ -1008,6 +1057,40 @@ class RoutingDiagnosticsTest(unittest.TestCase):
         )
         self.assertIn("task-dependent", result.detail)
         self.assertIn("showing default", result.detail)
+
+
+class WorkflowHookEvidenceTest(unittest.TestCase):
+    def test_direct_probe_never_claims_runtime_hook_loading(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            checks = doctor.hook_probe(SCRIPTS.parent, Path(folder))
+        self.assertEqual([row.result for row in checks], ["PASS", "WARN"])
+        self.assertIn("directly", checks[0].detail)
+        self.assertIn("unverified", checks[1].detail)
+
+    def test_configuration_missing_and_broken_handler(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.assertEqual(doctor.check_hooks(root).result, "FAIL")
+            (root / "hooks").mkdir()
+            (root / "hooks" / "hooks.json").write_text(
+                '{"hooks": {}}', encoding="utf-8"
+            )
+            self.assertEqual(doctor.check_hooks(root).result, "FAIL")
+            (root / "hooks" / "hooks.json").write_text(
+                '{"hooks": []}', encoding="utf-8"
+            )
+            self.assertEqual(doctor.check_hooks(root).result, "FAIL")
+            config = json.loads(
+                (SCRIPTS.parent / "hooks" / "hooks.json").read_text(encoding="utf-8")
+            )
+            config["hooks"]["PreToolUse"][0]["hooks"][0]["args"][-1] = "not-hook"
+            (root / "scripts").mkdir()
+            (root / "scripts" / "phase_gate.py").write_text("", encoding="utf-8")
+            (root / "hooks" / "hooks.json").write_text(
+                json.dumps(config), encoding="utf-8"
+            )
+            self.assertEqual(doctor.check_hooks(root).result, "FAIL")
+        self.assertEqual(doctor.check_hooks(SCRIPTS.parent).result, "PASS")
 
 
 if __name__ == "__main__":

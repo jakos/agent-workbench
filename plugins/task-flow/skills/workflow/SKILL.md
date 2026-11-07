@@ -18,6 +18,7 @@ chat history; everything another role needs is written to `.work/<task-id>/`.
   plan.md          planner output, format below
   status.md        phase, round, base, branch, worktree, approval, history
   checks-0.md      baseline check results on the untouched base, before round 1
+  gates.jsonl      append-only gate decisions when policy is configured; retained at finish
   checks-<n>.md    automated check results for round n (1..3)
   review-<n>.md    reviewer verdict for round n
   impl-<n>.json    implementer metrics for round n — written by scripts/implement.py
@@ -56,8 +57,8 @@ artifact against the plan.md contract below (`scripts/role_contracts.py`), and p
 only the validated `plan.md` — the orchestrator alone updates `status.md` afterwards.
 
 After `/task-finish` only the `.md` files, the `impl-*.json` files, the `role-*.json`
-files and `worktree/` (if
-kept) remain; any other file or directory in the folder is scratch and is deleted.
+files, `gates.jsonl` and `worktree/` (if kept) remain; any other file or directory in
+the folder is scratch and is deleted.
 
 Source changes happen **in the worktree** when `status.md` names one, otherwise in the
 repository root on the task branch. `.work/` files are always read and written at the
@@ -115,6 +116,22 @@ bytes unchanged):
   the previous round count in History, and — only with the user's explicit authorization —
   resets the task's `status.md` (phase `approved`, round 0) so the next
   `/task-flow:task-run` starts a new attempt at round 1; `--auto` never grants it.
+
+## policy
+
+Optional `.claude/task-flow.policy.toml` (user `~/.claude/task-flow.policy.toml`,
+then project) is read strictly by `scripts/policy.py`. No file preserves legacy
+behaviour; an explicit file clamps `--auto`. Flat keys: `preset` is `supervised`,
+`gated` or `autonomous`; `plan_approval` and `merge` are `ask|auto-low-risk|auto`;
+`push`, `pr`, `release` are `ask|auto`; `max_rounds` is 1..3;
+`no_progress_stop` is true only; `isolation_required` is boolean; `budget_tokens`
+is a positive integer, `budget_usd` a positive number (absent means unlimited);
+`risk_paths` is an array of safe repository-relative globs, additive to sensitive
+built-ins. Only `[autopilot] mode = "semi"|"full"` is a table. Unknown keys,
+tables and invalid types are errors. Project wins per key except isolation uses
+OR and rounds/budgets use the stricter limit. Each value records its source.
+Release auto requires an explicit key. Autonomous or required isolation refuses
+without an active backend. See `templates/policy.toml` and orchestration → Policy.
 
 ## plan.md
 
@@ -184,10 +201,29 @@ checks-0.md evidence; or `none`>
 2. [suggestion] …
 ## Scope
 <changes outside plan.md's Steps, or "none">
+## Human attention
+risk: low|medium|high
+why: <nonempty single-line explanation>
+- none
 ## Verdict: APPROVED | CHANGES_REQUESTED
 ## Fix list
 1. <one concrete instruction per blocking finding or failing AC>
 ```
+
+The optional `## Human attention` section occurs immediately before the verdict.
+When risk reporting is enabled at the task's recorded base it is required. It has
+exactly one `risk: low|medium|high`, one nonempty single-line `why:`, and either
+`- none` or one to five `- file:line — what to judge` entries. Paths are safe
+repository-relative paths of reviewed current files or deleted base files; lines are
+positive (deleted files use base lines). Missing legacy sections mean unavailable,
+never low. Reviewers may raise the deterministic floor with a reason. Risk is advisory
+and heuristic; it never changes verdicts, approval gates, round limits or stop rules.
+
+Configuration is strict `.claude/task-flow.risk.toml`: `[risk] enabled` is boolean;
+optional additive `[[paths]]` tables contain only repository-relative glob `pattern`
+and `level = "low"|"medium"|"high"`. Unknown keys, wrong types, absolute paths and
+parent traversal are refused. Missing or disabled config preserves prior behavior.
+Configuration is read from the recorded base, so edits apply to subsequent tasks.
 
 Rules: evidence is a file:line, a test name, or command output — never "looks fine". Any
 **introduced** FAIL or ERROR in `checks-<n>.md`, any FAIL criterion, or any blocking
@@ -215,6 +251,11 @@ section is a malformed summary, never silently skipped:
 ## Out of scope
 ```
 
+For enabled tasks, put the current validated risk, why and attention list first within
+`## Goal`, immediately after the summary title and Goal heading. Keep the fixed
+summary headings unchanged. Without a review report unavailable; do not reassess.
+Disabled tasks keep the existing summary instructions.
+
 ## Task records (opt-in, finish-time)
 
 A repository opts in with `.claude/task-flow.records.toml` in the selected worktree (or
@@ -241,6 +282,9 @@ The sources are deterministic and are all read at the repository root's
 - criteria text: the `## Acceptance criteria` section of `plan.md` (`AC<n>: … Verify: …`);
 - AC results and per-round verdicts: the `## Acceptance criteria` table and
   `## Verdict:` of every `review-<n>.md` for rounds 1..round;
+- final-round risk, when reporting applies at the recorded base: the shared
+  attention parser reads `## Human attention` of `review-<round>.md`; absent legacy
+  attention means unavailable, malformed supplied attention is refused;
 - implementer profile/model per round: `impl-<n>.json` (`profile`, `model`; external
   rounds are written by `scripts/implement.py`, Claude rounds by the orchestrator as
   `{"kind": "claude", "profile": "claude", "model": "<model>"}` at implement time when
@@ -252,13 +296,28 @@ The record is one bounded, schema-versioned (`task-record/1`), UTF-8/LF
 scrubbed of file paths, credential URLs, tokens, private keys, secret assignments and
 attribution/session markers, with visible truncation at fixed limits. The trailers are
 `Task-Id`, `Task-Rounds`, repeated `Task-Implementer: <profile>/<model>` for the
-distinct executed pairs, and `Task-Plan-Approved: user|auto`; `Task-Risk` is not
-emitted until a merged risk schema exists. Regeneration is byte-identical; a
+distinct executed pairs, and `Task-Plan-Approved: user|auto`. When risk reporting
+applies at the recorded base and the final round has a valid
+rating, emit exactly one enum-valued `Task-Risk: low|medium|high`. Legacy reviews
+remain renderable with unavailable risk and no risk trailer; malformed supplied
+risk is refused. Only the final risk enum is exported, never unsanitized attention
+prose. Regeneration is byte-identical; a
 conflicting existing record, an unsafe destination or a malformed artifact is refused
 without partial output. The helper never commits, pushes, opens PRs, contacts models
 or prunes.
 
 ## Rounds and escalation
+
+When the delivered policy reader reports configured mode, `scripts/phase_gate.py`
+owns phase/round/approval transitions. Follow orchestration.md's enforced-transition
+instructions before the procedural rules below. Its shared checks also run before
+Claude implementer launches, external implementation, script checks and finish.
+`gates.jsonl` records allowed and denied scoped decisions; recording failure refuses
+protected work. Approval binds the plan digest and task attempt, and an explicit
+human grant binds a finite extra-round ceiling to that attempt. Prompt-hook occurrence
+alone supplies no human authorization. Do not bypass a gate refusal by editing status.
+No policy configuration retains legacy behavior. No-progress and circuit-breaker
+stops cannot be overridden by an extra-round grant.
 
 - Round 0 is the baseline check only: the checker runs the plan's verification commands on
   the untouched base and writes `checks-0.md`. No implementer, no reviewer. Failures there

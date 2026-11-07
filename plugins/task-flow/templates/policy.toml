@@ -1,0 +1,24 @@
+# Copy to .claude/task-flow.policy.toml (or ~/.claude/task-flow.policy.toml).
+# An absent file preserves legacy --auto behaviour. Explicit supervised always asks.
+# Every setting below is optional; uncomment to override the selected preset.
+# preset = "supervised" # supervised | gated | autonomous
+# plan_approval = "ask" # ask | auto-low-risk | auto
+# max_rounds = 3 # 1..3; stricter user/project limit wins
+# no_progress_stop = true # false is refused: this is a workflow invariant
+# push = "ask" # ask | auto
+# pr = "ask" # ask | auto
+# merge = "ask" # ask | auto-low-risk | auto; execution belongs to a later task
+# release = "ask" # ask | auto; auto requires this explicit key, never a preset
+# isolation_required = false # autonomous requires an active backend regardless
+# budget_tokens = 100000 # positive integer; absent means no policy limit
+# budget_usd = 10.0 # positive number; absent means no policy limit
+# risk_paths = [] # additive repository-relative globs; no absolute or parent paths
+# [autopilot]
+# mode = "semi" # semi | full; flags may only reduce autonomy
+
+# Delivery reporting is explicit; no automatic publication hook.
+# [metrics]
+# enabled = false
+# tag_prefix = "task-flow-"
+# weeks = 7 # 1..52 contiguous seven-day UTC buckets
+# incident_path = "" # optional repository-relative ledger path

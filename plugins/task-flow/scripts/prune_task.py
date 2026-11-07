@@ -11,8 +11,8 @@ Keep rule, top-level entries of <task-dir> only:
 - kept: a regular file (not a symlink or junction) whose name ends in `.md` or matches
   `impl-*.json` (the implementer's round metrics) or `role-*.json` (an external
   producer role's final invocation metrics, e.g. role-planner-*.json; only the
-  scratch/progress files are pruned), case-insensitive, and the entry named exactly
-  `worktree`
+  scratch/progress files are pruned), or is `gates.jsonl`, case-insensitive, and the
+  entry named exactly `worktree`
 - deleted: everything else, including directories (and any `.md` inside them), other
   files, symlinks and junctions of any name (unlinked, never followed), and a directory
   whose name ends in `.md`
@@ -44,6 +44,7 @@ def is_kept(entry: Path) -> bool:
     name = entry.name.lower()
     return (
         name.endswith(".md")
+        or name == "gates.jsonl"
         or fnmatch.fnmatchcase(name, "impl-*.json")
         or fnmatch.fnmatchcase(name, "role-*.json")
     )
@@ -103,6 +104,14 @@ def main() -> int:
     problem = refusal(task_dir)
     if problem:
         print(f"refusing to prune: {problem}", file=sys.stderr)
+        return 2
+
+    import phase_gate
+
+    try:
+        phase_gate.decide(task_dir, "prune")
+    except (phase_gate.Refusal, phase_gate.policy.ConfigError) as exc:
+        print(f"refusing to prune: {exc}", file=sys.stderr)
         return 2
 
     entries = sorted(task_dir.iterdir(), key=lambda p: p.name)

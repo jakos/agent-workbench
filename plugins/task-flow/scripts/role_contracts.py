@@ -56,6 +56,7 @@ import sys
 from dataclasses import dataclass, field
 
 import gates
+import risk
 
 # The nine `##` sections of plan.md, in the exact order SKILL.md requires.
 REQUIRED_SECTIONS = [
@@ -683,6 +684,7 @@ def validate_review(
     plan: str,
     current: CheckEvidence,
     baseline: CheckEvidence | None = None,
+    assessment: dict | None = None,
 ) -> Validation:
     reasons = _artifact_errors(text)
     sections, order = _sections(text)
@@ -704,6 +706,12 @@ def validate_review(
         f"Verdict: {verdict}",
         "Fix list",
     ]
+    if "Human attention" in order:
+        expected.insert(-2, "Human attention")
+    try:
+        risk.validate_attention(text, assessment)
+    except risk.RiskError as exc:
+        reasons.append(str(exc))
     if order != expected or verdict not in ("APPROVED", "CHANGES_REQUESTED"):
         reasons.append(
             "review must have the exact workflow sections and one valid verdict"

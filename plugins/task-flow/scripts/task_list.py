@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import epics
+import risk
 
 GROUPS = {
     "planned": 0,
@@ -97,6 +98,22 @@ def load_task(path: Path, epic_of: dict[str, str]) -> dict:
     }
 
 
+def review_risk(task: Path, round_number: str) -> str:
+    if not round_number.isdigit() or int(round_number) < 1:
+        return "unavailable"
+    path = task / f"review-{round_number}.md"
+    if not path.exists():
+        return "unavailable"
+    try:
+        text = path.read_text(encoding="utf-8")
+        if not text.startswith(f"# Review: round {round_number}\n"):
+            return "invalid"
+        attention = risk.parse_attention(text)
+        return attention["risk"] if attention else "unavailable"
+    except (OSError, UnicodeError, risk.RiskError):
+        return "invalid"
+
+
 def cell(value: str) -> str:
     return value.replace("|", "\\|")
 
@@ -142,6 +159,14 @@ def main() -> int:
     sys.stderr.reconfigure(encoding="utf-8")
 
     root = Path(args.root)
+    try:
+        config = root / risk.CONFIG
+        risk_enabled = risk.parse_config(
+            config.read_text(encoding="utf-8") if config.exists() else None
+        )["enabled"]
+    except (OSError, UnicodeError, risk.RiskError):
+        print("task_list: invalid risk configuration", file=sys.stderr)
+        return 2
     if args.epic is not None:
         try:
             known = epics.epic_path(root, args.epic).is_file()
@@ -167,8 +192,16 @@ def main() -> int:
     tasks.sort(key=lambda t: (t["group"], not t["dated"], t["time"], t["id"]))
 
     if tasks:
-        print("| id | epic | phase | round | last verdict | last History |")
-        print("| --- | --- | --- | --- | --- | --- |")
+        print(
+            "| id | epic | phase | round | last verdict | "
+            + ("risk | " if risk_enabled else "")
+            + "last History |"
+        )
+        print(
+            "| --- | --- | --- | --- | --- | "
+            + ("--- | " if risk_enabled else "")
+            + "--- |"
+        )
         for t in tasks:
             cells = (
                 t["id"],
@@ -178,6 +211,12 @@ def main() -> int:
                 t["verdict"],
                 t["history"],
             )
+            if risk_enabled:
+                cells = (
+                    *cells[:-1],
+                    review_risk(work / t["id"], t["round"]),
+                    cells[-1],
+                )
             print("| " + " | ".join(cell(c) for c in cells) + " |")
     else:
         print("No tasks under .work/." if args.all else "No open tasks under .work/.")

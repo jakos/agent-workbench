@@ -207,7 +207,117 @@ class TaskRecordTest(unittest.TestCase):
     def record_path(self, worktree, task_id=TASK_ID):
         return worktree / "docs" / "tasks" / f"{task_id}.md"
 
+    def test_enabled_final_risk_and_legacy(self) -> None:
+        repo, task, worktree = self.fresh()
+        self.write_task(task)
+        subprocess.run(
+            ["git", "-C", str(worktree), "init", "-b", "main"],
+            check=True,
+            capture_output=True,
+        )
+        config = worktree / ".claude/task-flow.risk.toml"
+        config.write_text("[risk]\nenabled=true\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(worktree), "add", str(config)],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(worktree),
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-m",
+                "enable fixture",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        result = self.cli("trailers", repo, task, worktree)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(b"Task-Risk", result.stdout)
+        review = task / "review-2.md"
+        legacy = review.read_text(encoding="utf-8")
+        review.write_text(
+            legacy.replace(
+                "## Verdict:",
+                "## Human attention\nrisk: high\nwhy: sk-PRIVATEVALUE1234567890\n- none\n## Verdict:",
+            ),
+            encoding="utf-8",
+        )
+        config.write_text("[risk]\nenabled=false\n", encoding="utf-8")
+        result = self.cli("trailers", repo, task, worktree)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.count(b"Task-Risk: high"), 1)
+        result = self.cli("render", repo, task, worktree)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = self.record_path(worktree).read_bytes()
+        self.assertIn(b"- risk: high", data)
+        self.assertNotIn(b"PRIVATEVALUE", data)
+        result = self.cli("render", repo, task, worktree)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.record_path(worktree).read_bytes(), data)
+        review.write_text(
+            legacy.replace(
+                "## Verdict:",
+                "## Human attention\nrisk: critical\nwhy: Invalid.\n- none\n## Verdict:",
+            ),
+            encoding="utf-8",
+        )
+        self.assertNotEqual(self.cli("trailers", repo, task, worktree).returncode, 0)
+
     # ------------------------------------------------------ AC1: disabled
+
+    def test_no_risk_config_preserves_records_with_unresolvable_metadata(self) -> None:
+        for field, old, new in (
+            ("base", "main", "deleted-task-branch"),
+            ("worktree", f".work/{TASK_ID}/worktree", "none"),
+        ):
+            with self.subTest(field=field):
+                repo, task, worktree = self.fresh()
+                self.write_task(task)
+                metadata = task / "status.md"
+                metadata.write_text(
+                    metadata.read_text(encoding="utf-8").replace(
+                        f"- {field}: {old}", f"- {field}: {new}"
+                    ),
+                    encoding="utf-8",
+                )
+                record = self.mod.build_record(task)
+                expected = self.mod.render_record(record).encode("utf-8")
+                result = self.cli("render", repo, task, worktree)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.record_path(worktree).read_bytes(), expected)
+                self.assertIn(b"- risk: unavailable", expected)
+                result = self.cli("trailers", repo, task, worktree)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(
+                    result.stdout.decode("utf-8").splitlines(),
+                    self.mod.render_trailers(record),
+                )
+                self.assertNotIn(b"Task-Risk:", result.stdout)
+
+    def test_present_risk_config_requires_resolvable_metadata(self) -> None:
+        for location in ("repo", "worktree"):
+            with self.subTest(location=location):
+                repo, task, worktree = self.fresh()
+                self.write_task(task)
+                root = repo if location == "repo" else worktree
+                (root / ".claude").mkdir(exist_ok=True)
+                (root / ".claude/task-flow.risk.toml").write_text(
+                    "[risk]\nenabled=true\n", encoding="utf-8"
+                )
+                for command in ("render", "trailers"):
+                    result = self.cli(command, repo, task, worktree)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn(b"cannot resolve base-pinned risk", result.stderr)
+                    self.assertEqual(result.stdout, b"")
+                self.assertFalse(self.record_path(worktree).exists())
 
     def test_disabled_is_noop(self):
         repo, task, worktree = self.fresh()
@@ -989,6 +1099,61 @@ class TaskRecordTest(unittest.TestCase):
         checks = release["targets"]["task-flow"]["checks"]
         self.assertEqual(checks.count(entry), 1, "the release list names it once")
         self.assertTrue(SCRIPT.is_file())
+
+
+from test_phase_gate import GateFixture
+
+
+class GateDigestTest(GateFixture):
+    def test_gate_digest_is_deterministic_and_exports_no_raw_log(self) -> None:
+        import phase_gate
+        import task_record
+
+        self.start()
+        self.evidence(1)
+        self.review(1)
+        self.set_state("review-approved", 1)
+        self.call("finish")
+        self.write(
+            "summary.md",
+            "# Summary: t1\n## Goal\nTest.\n## Changes\nTest.\n## Verification\nPassed.\n## Rounds\nOne.\n## Out of scope\nNone.\n",
+        )
+        first = task_record.render_record(task_record.build_record(self.task))
+        self.assertEqual(
+            first, task_record.render_record(task_record.build_record(self.task))
+        )
+        with phase_gate.locked(self.task):
+            self.assertIn(phase_gate.record_digest(self.task), first)
+        self.assertNotIn(str(self.project), first)
+        self.assertNotIn("2026-", first)
+        original_log = (self.task / "gates.jsonl").read_bytes()
+        self.call("finish")
+        self.assertEqual(
+            first, task_record.render_record(task_record.build_record(self.task))
+        )
+        self.assertTrue(
+            (self.task / "gates.jsonl").read_bytes().startswith(original_log)
+        )
+        self.assertGreater(
+            (self.task / "gates.jsonl").stat().st_size, len(original_log)
+        )
+        (self.config.parent / "task-flow.records.toml").write_text(
+            "[records]\nenabled = true\n", encoding="utf-8"
+        )
+        arguments = [
+            "render",
+            "--repo",
+            str(self.project),
+            "--task-dir",
+            str(self.task),
+        ]
+        self.assertEqual(task_record.main(arguments), 0)
+        self.call("finish")
+        self.assertEqual(task_record.main(arguments), 0)
+        with (self.task / "gates.jsonl").open("ab") as handle:
+            handle.write(b"invalid\n")
+        with self.assertRaises(task_record.RecordError):
+            task_record.build_record(self.task)
 
 
 if __name__ == "__main__":

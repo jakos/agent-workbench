@@ -777,6 +777,11 @@ class ParseChecksTest(unittest.TestCase):
         self.assertIn('Make `"py" x.py` pass (checks-1.md #1, FAIL, exit 1):', text)
         self.assertIn("FAIL: boom 10", text)
         self.assertIn("## Pre-existing failures", text)
+        sys.path.insert(0, str(PLUGIN / "scripts"))
+        import risk
+
+        self.assertIsNone(risk.parse_attention(text))
+        self.assertNotIn("Human attention", text)
 
     def test_in_scope_rules(self):
         plan = """# Plan: x

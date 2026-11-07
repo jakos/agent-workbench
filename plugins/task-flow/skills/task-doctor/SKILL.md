@@ -5,6 +5,9 @@ argument-hint: "[--online]"
 disable-model-invocation: true
 ---
 
+The policy.toml row follows models.toml: it shows legacy behaviour or preset and
+per-key sources, reports invalid keys, and warns when policy overrides Finish push/pr.
+
 From the repository root, run:
 
 ```

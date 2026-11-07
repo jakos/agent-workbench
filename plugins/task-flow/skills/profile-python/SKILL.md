@@ -60,3 +60,16 @@ uv run mypy <package>        # only if mypy is configured in the repo
 - Outbound calls have timeouts; retries only on idempotent operations.
 - Declared layering respected; no ORM row or Pydantic request model leaking inward.
 - Public API changes reflected in docs, schemas and type hints.
+
+
+### Review risk (opt-in)
+
+Use the shared `scripts/risk.py` assessment, never a lower rating. Defaults are
+advisory heuristics: medium at 300 changed lines or 10 files; high at 1,000 lines or
+30 files. Security/authentication, hooks, rules.py, CI, release, migration and
+deployment paths are high. Added dependencies, deleted tests/removed assertions,
+changed skips/expected failures and reduced coverage thresholds are medium. Added
+secret-like values and binary or uninspectable content are high. Additive custom
+path rules can only raise these defaults. These explicit path and line patterns do
+not prove semantic test strength or safety. Explain raised ratings and name up to
+five safe file:line locations needing human judgement; deleted files use base lines.

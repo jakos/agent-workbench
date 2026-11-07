@@ -1051,6 +1051,13 @@ def main() -> int:
                 budget_scope=args.budget_scope,
             )
             output = estimate(run) if args.command == "estimate" else next_step(run)
+            if args.command == "next" and output.startswith("run "):
+                import phase_gate
+
+                try:
+                    phase_gate.decide(Path(run["work"]) / output[4:], "dispatch")
+                except (phase_gate.Refusal, phase_gate.policy.ConfigError) as exc:
+                    raise Refusal(str(exc)) from exc
     except Refusal as error:
         print(f"autopilot.py: {error}", file=sys.stderr)
         return 2

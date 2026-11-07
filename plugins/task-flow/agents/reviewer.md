@@ -32,7 +32,15 @@ not to confirm that it meets it.
    Verdict: `CHANGES_REQUESTED` if any introduced check failure, any failed criterion, or
    any blocking finding exists; otherwise `APPROVED`. The Fix list gives one concrete instruction per
    problem — it is all the implementer will see.
-8. Write `.work/<task-id>/review-<n>.md`.
+8. When supplied a trusted `review-risk/1` assessment with enabled reporting, include
+   `## Human attention` immediately before Verdict. Rate at least its floor, give a
+   single-line why, and `- none` or up to five safe reviewed file:line locations with
+   what a human must judge (deleted files use base lines). You may raise risk with a
+   reason. Never treat low as a safety guarantee or high as a blocking finding by
+   itself. Disabled reporting keeps the legacy format. Do not infer attention from
+   the Fix list. The orchestrator runs `risk.py assess` before the Claude route and
+   `risk.py validate` before interpreting the verdict or advancing phase.
+9. Write `.work/<task-id>/review-<n>.md`.
 
 Return the verdict line and the Fix list.
 

@@ -46,6 +46,7 @@ kubeconform -strict -summary deploy/
 ## Finish
 
 <!-- What /task-finish may do without asking. Default: local commit only. -->
+<!-- When .claude/task-flow.policy.toml exists, policy wins for push/pr. -->
 - commit: yes
 - push: ask
 - pr: ask

@@ -1470,5 +1470,34 @@ class ExternalReviewBudgetTest(RunFixture):
         self.assertIn(f"| 1 | a | 2 | 3 | 2 | {ONE} | {MAX} |", out)
 
 
+from test_phase_gate import GateFixture
+
+
+class WorkflowBreakerTest(GateFixture):
+    def test_fabricated_in_progress_phase_does_not_bypass_breaker(self) -> None:
+        import phase_gate
+
+        self.approve()
+        self.evidence(0)
+        self.set_state("implementing", 1)
+        for name in ("a", "b"):
+            task = self.task.with_name(name)
+            task.mkdir()
+            (task / "plan.md").write_text(
+                (self.task / "plan.md").read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            (task / "status.md").write_text(
+                f"# Status: {name}\n- phase: escalated\n", encoding="utf-8"
+            )
+        run = self.project / ".work" / "_autopilot" / "r1"
+        run.mkdir(parents=True)
+        (run / "run.md").write_text(
+            "# Autopilot: r1\n- mode: full\n- budget: none\n- planning-tokens: 0\n- continue-past: none\n- bootstrap: none\n- state: running\n## Tasks\n| # | Task | Depends on | Tokens used |\n| --- | --- | --- | --- |\n| 1 | a | - | 0 |\n| 2 | b | - | 0 |\n| 3 | t1 | - | 0 |\n## History\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(phase_gate.Refusal, "wrong direction"):
+            self.call("implement", number=1)
+
+
 if __name__ == "__main__":
     unittest.main()
