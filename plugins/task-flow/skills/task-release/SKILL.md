@@ -9,5 +9,9 @@ Read `${CLAUDE_PLUGIN_ROOT}/skills/workflow/orchestration.md` and `${CLAUDE_PLUG
 procedure; this command only says which part to run.
 
 Follow **Release** for `$ARGUMENTS`. The release has exactly one approval gate and it is
-always asked — there is no `--auto` for it: nothing changes before approve. The push
+skipped only when `policy.py decide release` returns `auto (explicit)`; otherwise
+ask — there is no `--auto` for it. The push
 gets its own question afterwards, default no.
+
+Consult orchestration → **Policy** first: `scripts/policy.py` clamps `--auto`,
+approval, round limits, finish actions, mode and budgets; no file keeps legacy behaviour.

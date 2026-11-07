@@ -75,9 +75,13 @@ Local checks, in fixed order (each is a plain function; every input is an argume
  12. models.toml           models.load(project) -> PASS naming the files found (user,
                           project, or "none: every role is Claude"); ConfigError -> FAIL
                           with its message (file and key path) and the template as the
-                          fix. Checks 13-14 do not run then.
- 13. roles                 one PASS row listing models.resolve_roles().
- 14. implementer profiles  only when [roles] implementer names a profile: one row per
+                          fix. Checks 14-15 do not run then.
+ 13. policy.toml           policy.load(project, home) -> PASS absent (legacy) or preset
+                          and per-key sources from policy.table; ConfigError -> FAIL
+                          with exact error and template fix; conflicting Finish push/pr
+                          -> WARN "policy wins over .claude/task-flow.md -> Finish".
+ 14. roles                 one PASS row listing models.resolve_roles().
+ 15. implementer profiles  only when [roles] implementer names a profile: one row per
                           aspect for the primary and for each name in its fallback list:
                           - enabled = false: FAIL on the primary (implement.py refuses
                             it), WARN on a fallback (skipped);
@@ -116,7 +120,7 @@ the profile's method (`api` or `cli`), model and billing, and each of its fallba
 its own `... fallback <name>` row. The stage table inspects the configuration only: no
 CLI is executed and no request is sent, so it spends no model capacity.
 
-Online check (only with --online, only for the enabled API-driver profiles of check 14
+Online check (only with --online, only for the enabled API-driver profiles of check 15
 that have their key or need none; driver "cli" profiles are never online targets):
 GET {base_url}/models with the driver's auth headers
 (Authorization: Bearer <key> on openai-loop; x-api-key and anthropic-version on
@@ -151,6 +155,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import models
+import policy
 
 GIT_TIMEOUT_SECONDS = 30
 ONLINE_TIMEOUT_CAP_SECONDS = 20
@@ -680,6 +685,38 @@ def check_models(project_root: Path) -> tuple[Check, dict | None, dict | None]:
         found.append(f"project: {project}")
     detail = "; ".join(found) if found else "none: every role is Claude"
     return (Check("models.toml", "PASS", detail), profiles, roles)
+
+
+def check_policy(project_root: Path, home: Path) -> Check:
+    try:
+        loaded = policy.load(project_root, home)
+        if loaded["mode"] == "legacy":
+            return Check("policy.toml", "PASS", "absent: legacy behaviour (supervised)")
+        detail = policy.table(loaded)
+        finish = policy.finish_settings(project_root)
+        if any(
+            finish[key] != loaded["values"][key]
+            for key in ("push", "pr")
+            if key in finish
+        ):
+            return Check(
+                "policy.toml",
+                "WARN",
+                "policy wins over .claude/task-flow.md -> Finish; " + detail,
+                [
+                    "fix: align Finish push/pr with policy, or remove the conflicting Finish setting"
+                ],
+            )
+        return Check("policy.toml", "PASS", detail)
+    except policy.ConfigError as exc:
+        return Check(
+            "policy.toml",
+            "FAIL",
+            str(exc),
+            [
+                "fix: correct the policy key using plugins/task-flow/templates/policy.toml"
+            ],
+        )
 
 
 def check_roles(resolved: dict) -> Check:
@@ -1243,6 +1280,7 @@ def main(argv: list[str] | None = None) -> int:
     checks.append(check_anthropic_key(env))
     models_check, profiles, roles = check_models(project)
     checks.append(models_check)
+    checks.append(check_policy(project, home))
     stages = None
     if profiles is not None and roles is not None:
         resolved = models.resolve_roles(project)

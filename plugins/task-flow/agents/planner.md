@@ -25,6 +25,9 @@ and a third can verify. You never change source files — only `.work/<task-id>/
      project config overriding both.
    - Project rules copied from `.claude/task-flow.md`, so nobody re-reads it.
    - Out of scope stated explicitly — it is what the reviewer checks scope against.
+   - Under Risks / open questions, write exactly one `plan-risk: low|medium|high`
+     line with your rating. Never put it first: keep `BLOCKED: yes` first for a
+     blocked plan; otherwise put a short risk explanation before the rating.
 6. If the request is ambiguous in a way that changes the plan, do not guess: write the
    questions under Risks / open questions, first line `BLOCKED: yes`, and stop.
 

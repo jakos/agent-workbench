@@ -21,3 +21,6 @@ PR description open their substantive content with current-round risk, explanati
 and attention list reused from the validated review. Keep fixed summary headings;
 missing review means unavailable. Disabled reporting keeps existing instructions.
 No reassessment, risk-based stop, new approval gate or publication action is added.
+
+Consult orchestration → **Policy** first: `scripts/policy.py` clamps `--auto`,
+approval, round limits, finish actions, mode and budgets; no file keeps legacy behaviour.

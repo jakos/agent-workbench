@@ -110,6 +110,10 @@ class RealRepoListTest(unittest.TestCase):
         self.assertEqual(verify.test_guard_problems(checks, ROOT), [])
         self.assertGreater(len(checks), 0)
         listed = verify.listed_tests(checks)
+        self.assertEqual(
+            listed[listed.index("plugins/task-flow/tests/test_risk.py") + 1],
+            "plugins/task-flow/tests/test_policy.py",
+        )
         self.assertEqual(len(listed), len(set(listed)), "no duplicate test entry")
         self.assertEqual(sorted(set(listed)), verify.discovered_tests(ROOT))
         self.assertIn("plugins/task-flow/tests/test_ci.py", listed)

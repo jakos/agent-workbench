@@ -13,3 +13,6 @@ Follow **Phase: plan** for task `$ARGUMENTS`, including the approval gate. Never
 - `--planner <profile>` plans with that profile for this invocation only, instead of the
   configured `[roles] planner`; it must name an enabled configured profile of
   models.toml — never a free-form model or command (see **Phase: plan** step 0).
+
+Consult orchestration → **Policy** first: `scripts/policy.py` clamps `--auto`,
+approval, round limits, finish actions, mode and budgets; no file keeps legacy behaviour.

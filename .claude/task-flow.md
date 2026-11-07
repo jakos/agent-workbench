@@ -2,7 +2,7 @@
 
 <!-- Project rules for the task-flow planner in THIS repository (agent-workbench).
      Format: plugins/task-flow/templates/task-flow.md. Plain Markdown: agents read it,
-     no parser does. -->
+     policy overrides Finish push/pr when task-flow.policy.toml exists. -->
 
 ## Verification commands
 
@@ -42,6 +42,7 @@ uv run --script plugins/task-flow/tests/test_cli_driver.py
 uv run --script plugins/task-flow/tests/test_role_run.py
 uv run --script plugins/task-flow/tests/test_role_contracts.py
 uv run --script plugins/task-flow/tests/test_risk.py
+uv run --script plugins/task-flow/tests/test_policy.py
 uvx ruff==0.17.3 check plugins/task-flow/scripts plugins/task-flow/tests plugins/task-flow/bench
 uvx ruff==0.17.3 format --check plugins/task-flow/scripts plugins/task-flow/tests plugins/task-flow/bench
 claude plugin validate .

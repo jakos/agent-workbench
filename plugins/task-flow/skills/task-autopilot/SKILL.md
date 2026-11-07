@@ -19,3 +19,6 @@ Arguments: `$ARGUMENTS`
 Follow **Autopilot** in orchestration.md. Obey `autopilot.py next` exactly between tasks. A failed external implementer round (exit 1 or 2 of `implement.py`) pauses the run, also with `--auto`; `/task-flow:task-autopilot <run-id>` resumes it. Never push, open a PR, deploy or remove a worktree, and never make a commit except the initial commit the user chose in Preconditions (each task's own finish commit is the task loop's).
 
 Resolve configured backlog execution as in orchestration Decompose, including repository gathering and goal-only epic decomposition. Claude defaults and approval gates stay unchanged. Persist budget-scope (default claude); resume retains it. External artifacts must validate before phase advancement.
+
+Consult orchestration → **Policy** first: `scripts/policy.py` clamps `--auto`,
+approval, round limits, finish actions, mode and budgets; no file keeps legacy behaviour.

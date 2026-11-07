@@ -116,6 +116,22 @@ bytes unchanged):
   resets the task's `status.md` (phase `approved`, round 0) so the next
   `/task-flow:task-run` starts a new attempt at round 1; `--auto` never grants it.
 
+## policy
+
+Optional `.claude/task-flow.policy.toml` (user `~/.claude/task-flow.policy.toml`,
+then project) is read strictly by `scripts/policy.py`. No file preserves legacy
+behaviour; an explicit file clamps `--auto`. Flat keys: `preset` is `supervised`,
+`gated` or `autonomous`; `plan_approval` and `merge` are `ask|auto-low-risk|auto`;
+`push`, `pr`, `release` are `ask|auto`; `max_rounds` is 1..3;
+`no_progress_stop` is true only; `isolation_required` is boolean; `budget_tokens`
+is a positive integer, `budget_usd` a positive number (absent means unlimited);
+`risk_paths` is an array of safe repository-relative globs, additive to sensitive
+built-ins. Only `[autopilot] mode = "semi"|"full"` is a table. Unknown keys,
+tables and invalid types are errors. Project wins per key except isolation uses
+OR and rounds/budgets use the stricter limit. Each value records its source.
+Release auto requires an explicit key. Autonomous or required isolation refuses
+without an active backend. See `templates/policy.toml` and orchestration → Policy.
+
 ## plan.md
 
 The planner writes exactly these headings, in this order:

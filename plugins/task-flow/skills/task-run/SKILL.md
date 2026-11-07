@@ -16,3 +16,6 @@ Arguments: `$ARGUMENTS`
 - `--planner <profile>` plans a new task (or a task still in phase `new`) with that profile for this invocation only, instead of the configured `[roles] planner`; it must name an enabled configured profile of models.toml. On resume without the flag, the current configuration applies — history is evidence, not a sticky selection — and an existing valid `plan.md` of a `planned`/`approved` task is never silently replanned.
 
 Then follow **The loop**. Update `status.md` after every phase. Stop only at: the approval gate (unless `--auto`), `BLOCKED` from the planner or implementer, `review-approved`, no progress (escalation), or the round cap (escalation after round 3). Never stop on your own judgment that the run cannot pass. A failed external implementer round (exit 1 or 2 of `implement.py`) is not a stop: the same command resumes that round.
+
+Consult orchestration → **Policy** first: `scripts/policy.py` clamps `--auto`,
+approval, round limits, finish actions, mode and budgets; no file keeps legacy behaviour.

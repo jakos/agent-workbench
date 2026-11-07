@@ -226,7 +226,7 @@ class ScriptTest(DoctorTest):
         self.assertIn("models", imported)
         for module in imported:
             self.assertTrue(
-                module in sys.stdlib_module_names or module == "models",
+                module in sys.stdlib_module_names or module in {"models", "policy"},
                 f"non-stdlib import: {module}",
             )
 
@@ -992,6 +992,54 @@ class ChangesNothingTest(DoctorTest):
         self.assertEqual(snapshot(self.home), home_before)
         self.assertEqual(status(), status_before)
         self.assertEqual(dict(os.environ), before_env)
+
+
+class PolicyDiagnosticsTest(DoctorTest):
+    def test_absent_and_valid(self) -> None:
+        row = doctor.check_policy(self.repo, self.home)
+        self.assertEqual(row.result, "PASS")
+        self.assertEqual(row.detail, "absent: legacy behaviour (supervised)")
+        self.write(".claude/task-flow.policy.toml", 'preset = "gated"')
+        row = doctor.check_policy(self.repo, self.home)
+        self.assertEqual(row.result, "PASS")
+        self.assertIn("gated", row.detail)
+        self.assertIn("[preset:gated]", row.detail)
+        self.write(".claude/task-flow.policy.toml", 'push = "ask"')
+        self.assertIn("[project]", doctor.check_policy(self.repo, self.home).detail)
+
+    def test_invalid_and_conflicts(self) -> None:
+        self.write(".claude/task-flow.policy.toml", "max_rounds = 4")
+        row = doctor.check_policy(self.repo, self.home)
+        self.assertEqual(row.result, "FAIL")
+        self.assertIn("max_rounds", row.detail)
+        self.assertTrue(row.fixes)
+        for finish, setting in (("ask", "auto"), ("yes", "ask")):
+            for action in ("push", "pr"):
+                self.write(".claude/task-flow.policy.toml", f'{action} = "{setting}"')
+                self.write(".claude/task-flow.md", f"## Finish\n- {action}: {finish}\n")
+                row = doctor.check_policy(self.repo, self.home)
+                self.assertEqual(row.result, "WARN")
+                self.assertIn(
+                    "policy wins over .claude/task-flow.md -> Finish", row.detail
+                )
+                self.assertTrue(row.fixes)
+
+    def test_fixed_row_order(self) -> None:
+        self.init_repo()
+        self.commit()
+        _, out, _ = self.run_doctor(["--project", str(self.repo)])
+        rows = [
+            [cell.strip() for cell in line.split("|")[1:3]]
+            for line in out.splitlines()
+            if " | models.toml |" in line
+            or " | policy.toml |" in line
+            or " | roles |" in line
+        ]
+        self.assertEqual(
+            [row[1] for row in rows], ["models.toml", "policy.toml", "roles"]
+        )
+        first = int(rows[0][0])
+        self.assertEqual([int(row[0]) for row in rows], [first, first + 1, first + 2])
 
 
 class RoutingDiagnosticsTest(unittest.TestCase):

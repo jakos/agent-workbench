@@ -94,6 +94,13 @@ def plan_with(**replacements):
 
 
 class ValidPlanTest(unittest.TestCase):
+    def test_plan_risk_line_preserves_validation_and_blocked_state(self) -> None:
+        for text, blocked in ((VALID_PLAN, False), (BLOCKED_PLAN, True)):
+            with self.subTest(blocked=blocked):
+                verdict = role_contracts.validate_plan(text + "plan-risk: low\n")
+                self.assertTrue(verdict.ok, verdict.reasons)
+                self.assertEqual(verdict.blocked, blocked)
+
     def test_valid_plan_passes(self):
         verdict = role_contracts.validate_plan(VALID_PLAN)
         self.assertTrue(verdict.ok, verdict.reasons)
