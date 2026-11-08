@@ -105,6 +105,7 @@ from typing import Self
 import cli_driver
 import drivers
 import models
+import publish_credentials
 from launch import cmd_command_line, cmd_exe, is_cmd_script
 from rules import check_command, check_write
 
@@ -695,6 +696,10 @@ def prepare(args) -> Context:
         raise Refusal("no --profile given and [roles] implementer is not set")
     if name not in ctx.profiles:
         raise Refusal(f"no profile named {name!r} in models.toml")
+    try:
+        publish_credentials.runner(os.environ, ctx.profiles)
+    except publish_credentials.CredentialError as exc:
+        raise Refusal(str(exc)) from None
     profile = ctx.profiles[name]
     if not profile["enabled"]:
         raise Refusal(f"profile {name!r} is disabled (enabled = false)")
@@ -810,7 +815,7 @@ def child_env() -> dict:
         upper = name.upper()
         if upper in CHILD_ENV_EXACT or upper.startswith(CHILD_ENV_PREFIXES):
             env[name] = value
-    return env
+    return publish_credentials.clean(env)
 
 
 def quote_path(path: str) -> str:
@@ -1877,8 +1882,12 @@ def write_metrics(
         handle.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
 
-def main(argv=None) -> int:
+def main(argv: list[str] | None = None) -> int:
     try:
+        try:
+            publish_credentials.runner(os.environ)
+        except publish_credentials.CredentialError as exc:
+            raise Refusal(str(exc)) from None
         args = parse_args(argv)
         ctx = prepare(args)
         before, untracked_before = snapshot(ctx.worktree)

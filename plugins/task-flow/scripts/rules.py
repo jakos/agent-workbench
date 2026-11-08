@@ -131,6 +131,7 @@ SHELL_ARG_CHARS = "&|<>`$"
 
 LEAVES_MACHINE = re.compile(
     r"\bgit\b[^|;&\n]*\spush\b"
+    r"|\bgh\s+api\b"
     r"|\bgh\s+(?:pr\s+(?:create|merge|edit|ready)|release\s+create|repo\s+create)\b"
     r"|\b(?:kubectl|oc)\s+(?:apply|create|delete|replace|patch|scale|rollout|set|annotate|label)\b"
     r"|\bhelm\s+(?:install|upgrade|uninstall|rollback|delete)\b"
@@ -202,6 +203,10 @@ def check_command(command: str, role: str) -> str | None:
     segment, then the read-only git rule.
     """
     _known_role(role)
+    if re.search(r"\bpublish_task(?:\.py)?\b", command, re.IGNORECASE):
+        return "publication requires the trusted launcher outside model sessions"
+    if re.search(r"\bautopilot\.py\b[^|;&\n]*\sdelivery\b", command, re.IGNORECASE):
+        return "publication delivery requires the external trusted launcher"
     segments = SEGMENTS.split(command)
     leaves = any(
         LEAVES_MACHINE.search(s) and not CLIENT_DRY_RUN.search(s) for s in segments
@@ -365,6 +370,14 @@ def check_write(path: str, role: str, root: Path | str | None = None) -> str | N
     both the raw path and the resolved worktree-relative path.
     """
     _known_role(role)
+    parts = [
+        part.rstrip(". ").casefold() for part in path.replace("\\", "/").split("/")
+    ]
+    if ".work" in parts and re.fullmatch(
+        r"publication-(?:check-\d+|review-\d+|approval-\d+|request|grant-(?:push|pr)|receipt)\.md",
+        parts[-1],
+    ):
+        return "publication evidence is written only by trusted workflow scripts"
     if role != "external-implementer" and _is_snooze_file(path):
         return SNOOZE_WRITE
     if role in EXTERNAL_PRODUCER_ROLES:

@@ -1499,5 +1499,21 @@ class WorkflowBreakerTest(GateFixture):
             self.call("implement", number=1)
 
 
+class PublicationDeliveryTest(unittest.TestCase):
+    def test_delivery_uses_fresh_ancestry_instead_of_local_phase(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch("publish_task.Publisher") as publisher,
+        ):
+            instance = publisher.return_value
+            for delivered, expected in (
+                (False, "undelivered to main"),
+                (True, "delivered to main"),
+            ):
+                instance.delivery.return_value = delivered
+                self.assertEqual(autopilot.delivery_line(Path(tmp)), expected)
+            self.assertEqual(instance.delivery.call_count, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

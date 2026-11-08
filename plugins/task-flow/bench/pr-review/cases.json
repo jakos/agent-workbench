@@ -1,0 +1,169 @@
+[
+  {
+    "id": "hook-envelope",
+    "source_commit": "a659fc6759b7760dd0e1a7c68d29a48ebeafe14f",
+    "variant": "reconstructed",
+    "provenance": "Minimal counterexample reconstructed from the named fix commit and explanation, not an exact historical diff.",
+    "file": {
+      "path": "hooks/hooks.json",
+      "old_path": "hooks/hooks.json",
+      "status": "M",
+      "old": "",
+      "new": "{\n  \"PostToolUse\": [\n    {\n      \"matcher\": \"Edit|Write\",\n      \"hooks\": [\n        {\n          \"type\": \"command\",\n          \"command\": \"uv\",\n          \"args\": [\n            \"run\",\n            \"--quiet\",\n            \"--script\",\n            \"${CLAUDE_PLUGIN_ROOT}/scripts/format_python.py\"\n          ],\n          \"timeout\": 60\n        }\n      ]\n    }\n  ]\n}\n"
+    },
+    "input_digest": "cefec45b395d6ef5359ad8a34e56768f5a1a3c5626eb8899885240b3adacc6c3",
+    "defect": true,
+    "oracle": "hook-envelope",
+    "scenario": "Loader rejects the unwrapped hook file; formatter never runs.",
+    "terms": [
+      "loader",
+      "wrapper",
+      "envelope",
+      "hooks key"
+    ]
+  },
+  {
+    "id": "duplicate-hook",
+    "source_commit": "ef10a97e4b5a7d46f8b5d91d8824679c4337a17f",
+    "variant": "reconstructed",
+    "provenance": "Minimal counterexample reconstructed from the named fix commit and explanation, not an exact historical diff.",
+    "file": {
+      "path": ".claude-plugin/plugin.json",
+      "old_path": ".claude-plugin/plugin.json",
+      "status": "M",
+      "old": "",
+      "new": "{\"name\":\"fixture\",\"hooks\":\"./hooks/hooks.json\"}\n"
+    },
+    "input_digest": "14f80089282f54c28f3b3fb4b357d02c9f46b512d4d2b3aa09fb7d54db59b354",
+    "defect": true,
+    "oracle": "duplicate-hook",
+    "scenario": "Conventional hook file is loaded twice; plugin loading fails.",
+    "terms": [
+      "duplicate",
+      "twice",
+      "convention"
+    ]
+  },
+  {
+    "id": "global-marketplace",
+    "source_commit": "0be1a2d959e46e5f3994354883886553142dcf71",
+    "variant": "reconstructed",
+    "provenance": "Minimal counterexample reconstructed from the named fix commit and explanation, not an exact historical diff.",
+    "file": {
+      "path": ".claude/settings.json",
+      "old_path": ".claude/settings.json",
+      "status": "M",
+      "old": "",
+      "new": "{\"extraKnownMarketplaces\":{\"local\":{\"source\":{\"source\":\"directory\",\"path\":\".\"}}}}\n"
+    },
+    "input_digest": "0977d20a5a18248ed41b0d245fae02ccffaf5424e494b91f3b7ade422b58d8e0",
+    "defect": true,
+    "oracle": "global-marketplace",
+    "scenario": "Project settings replace a user-wide marketplace affecting other projects.",
+    "terms": [
+      "global",
+      "user-wide",
+      "other project"
+    ]
+  },
+  {
+    "id": "windows-shell",
+    "source_commit": "c29f46d1db6607583306d28fa0ebeb05e6915eca",
+    "variant": "reconstructed",
+    "provenance": "Minimal counterexample reconstructed from the named fix commit and explanation, not an exact historical diff.",
+    "file": {
+      "path": "hooks/hooks.json",
+      "old_path": "hooks/hooks.json",
+      "status": "M",
+      "old": "",
+      "new": "{\n  \"hooks\": {\n    \"PostToolUse\": [\n      {\n        \"matcher\": \"Edit|Write\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"bash ${CLAUDE_PLUGIN_ROOT}/scripts/format_python.sh\",\n            \"timeout\": 60\n          }\n        ]\n      }\n    ]\n  }\n}\n"
+    },
+    "input_digest": "72e53b500bbec4d5be563570d704b03aac246221a124a4ac0f3410ff21a56031",
+    "defect": true,
+    "oracle": "windows-shell",
+    "scenario": "Windows without Git Bash cannot start the hook.",
+    "terms": [
+      "windows",
+      "bash"
+    ]
+  },
+  {
+    "id": "space-path",
+    "source_commit": "c29f46d1db6607583306d28fa0ebeb05e6915eca",
+    "variant": "reconstructed",
+    "provenance": "Minimal counterexample reconstructed from the named fix commit and explanation, not an exact historical diff.",
+    "file": {
+      "path": "scripts/format_python.sh",
+      "old_path": "scripts/format_python.sh",
+      "status": "M",
+      "old": "",
+      "new": "cd $PROJECT\nruff format .\n"
+    },
+    "input_digest": "76a340ac439f1451e66d2cd1765a2ae8a503c54b913c8acf634fdb87cd798e20",
+    "defect": true,
+    "oracle": "space-path",
+    "scenario": "Project paths containing spaces split into multiple cd arguments.",
+    "terms": [
+      "space",
+      "quot"
+    ]
+  },
+  {
+    "id": "bsd-sed",
+    "source_commit": "c29f46d1db6607583306d28fa0ebeb05e6915eca",
+    "variant": "reconstructed",
+    "provenance": "Minimal counterexample reconstructed from the named fix commit and explanation, not an exact historical diff.",
+    "file": {
+      "path": "scripts/block_attribution.sh",
+      "old_path": "scripts/block_attribution.sh",
+      "status": "M",
+      "old": "",
+      "new": "sed 's/\\t/ /g'\n"
+    },
+    "input_digest": "5937495faac9cd08cf8ca0c410259a459158e27c120233e715504e54f35b08ba",
+    "defect": true,
+    "oracle": "bsd-sed",
+    "scenario": "BSD sed on macOS does not interpret this GNU tab escape.",
+    "terms": [
+      "bsd",
+      "macos",
+      "tab"
+    ]
+  },
+  {
+    "id": "clean-hook",
+    "source_commit": "a659fc6759b7760dd0e1a7c68d29a48ebeafe14f",
+    "variant": "reconstructed",
+    "provenance": "Minimal counterexample reconstructed from the named fix commit and explanation, not an exact historical diff.",
+    "file": {
+      "path": "hooks/hooks.json",
+      "old_path": "hooks/hooks.json",
+      "status": "M",
+      "old": "",
+      "new": "{\"hooks\":{\"PostToolUse\":[]}}\n"
+    },
+    "input_digest": "809f6463e57e92a30265f0cc0235b277dacd954668d9effd6c7e5970e4356059",
+    "defect": false,
+    "oracle": "clean-hook",
+    "scenario": "Correct envelope; no defect expected.",
+    "terms": []
+  },
+  {
+    "id": "clean-command",
+    "source_commit": "c29f46d1db6607583306d28fa0ebeb05e6915eca",
+    "variant": "reconstructed",
+    "provenance": "Minimal counterexample reconstructed from the named fix commit and explanation, not an exact historical diff.",
+    "file": {
+      "path": "hooks/hooks.json",
+      "old_path": "hooks/hooks.json",
+      "status": "M",
+      "old": "",
+      "new": "{\n  \"hooks\": {\n    \"PostToolUse\": [\n      {\n        \"matcher\": \"Edit|Write\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"uv\",\n            \"args\": [\n              \"run\",\n              \"--quiet\",\n              \"--script\",\n              \"${CLAUDE_PLUGIN_ROOT}/scripts/format_python.py\"\n            ],\n            \"timeout\": 60\n          }\n        ]\n      }\n    ]\n  }\n}\n"
+    },
+    "input_digest": "f403d47ec066d345c2886d10fb766878dc33e848403c2051935147ad3d0ef084",
+    "defect": false,
+    "oracle": "clean-command",
+    "scenario": "Portable argument list; no shell defect expected.",
+    "terms": []
+  }
+]

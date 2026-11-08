@@ -543,5 +543,24 @@ class CliDriverTest(unittest.TestCase):
         self.assertIn(secret, result_plain.final_message or "")
 
 
+class PublicationBoundaryTest(unittest.TestCase):
+    def test_reserved_credentials_never_reach_models(self) -> None:
+        import publish_credentials
+
+        sentinel = "sentinel-publication-secret"
+        for key in ("TASK_FLOW_PUBLISH_TOKEN", "task_flow_publish_token"):
+            with self.assertRaises(publish_credentials.CredentialError) as caught:
+                publish_credentials.runner({key: sentinel})
+            self.assertNotIn(sentinel, str(caught.exception))
+        for name in ("TASK_FLOW_PUBLISH_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+            for profile in ({"pass_env": [name]}, {"api_key_env": name}):
+                with self.assertRaises(publish_credentials.CredentialError):
+                    publish_credentials.runner({}, {"model": profile})
+        self.assertEqual(
+            publish_credentials.clean({"PATH": "safe", "GH_TOKEN": sentinel}),
+            {"PATH": "safe"},
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

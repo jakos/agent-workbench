@@ -22,3 +22,10 @@
 # tag_prefix = "task-flow-"
 # weeks = 7 # 1..52 contiguous seven-day UTC buckets
 # incident_path = "" # optional repository-relative ledger path
+
+# Project-only opt-in; all four keys are required. Never put a token here.
+# [publish]
+# enabled = false
+# repository = "owner/repository"
+# remote = "origin"
+# credential_env = "TASK_FLOW_PUBLISH_TOKEN"

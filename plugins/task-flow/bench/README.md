@@ -27,6 +27,13 @@ The harness is stdlib-only and runs on macOS, Linux and Windows:
 uv run --script plugins/task-flow/bench/bench.py <command>
 ```
 
+## Cases
+
+The separate [PR review evaluation](pr-review/README.md) freezes eight historical
+counterexamples and controls for the advisory CI reviewer. Its
+[results](pr-review/results.md) remain explicitly unmeasured until a separately
+authorized live run; fake adapters establish plumbing, not detection quality.
+
 ### CLI tool/authentication matrix (checked 2026-11-06)
 
 All authenticated tests: **untested**. These are interface and terms checks, not

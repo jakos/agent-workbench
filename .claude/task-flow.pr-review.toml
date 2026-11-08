@@ -1,0 +1,19 @@
+# Inactive until an operator explicitly authorizes hosted activation and provisions
+# this named Actions secret. Never store a credential here.
+[review]
+enabled = false
+provider = "anthropic"
+secret_name = "PR_REVIEW_API_KEY"
+model = "claude-haiku-4-5-20251001"
+timeout_seconds = 90
+max_usd = 0.50
+
+[review.low]
+input_bytes = 40000
+output_tokens = 1500
+[review.medium]
+input_bytes = 80000
+output_tokens = 2500
+[review.high]
+input_bytes = 120000
+output_tokens = 4000

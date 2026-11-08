@@ -48,6 +48,8 @@ uvx ruff==0.17.3 check plugins/task-flow/scripts plugins/task-flow/tests plugins
 uvx ruff==0.17.3 format --check plugins/task-flow/scripts plugins/task-flow/tests plugins/task-flow/bench
 claude plugin validate .
 uv run --script plugins/task-flow/tests/test_phase_gate.py
+uv run --script plugins/task-flow/tests/test_publish_task.py
+uv run --script plugins/task-flow/tests/test_pr_review.py
 ```
 
 ## Architecture rules
@@ -56,3 +58,16 @@ uv run --script plugins/task-flow/tests/test_phase_gate.py
   `plugins/*/.claude-plugin/plugin.json` or in `.claude-plugin/marketplace.json`, and
   do not write `CHANGELOG.md` entries. Versions and changelogs are set only by
   `/task-flow:task-release`, configured in `.claude/task-flow.release.toml`.
+
+## Publication
+
+Advisory PR review is independently opt-in through `.claude/task-flow.pr-review.toml`
+and the trusted-base `REVIEW.md` policy. It remains disabled here. Setup, spending,
+fork exclusions and the provider contract follow REVIEW.md. Human owners
+retain merge decisions; AI review is not a required deterministic check.
+
+Publication stays disabled here. An operator may opt in with the project-only
+`[publish]` table in the project policy configuration. Keep the publication
+credential outside every model session and runner. Local completion, PR publication
+and delivery into `main` are separate outcomes; human merge commits preserve task
+ancestry. Never push or change live GitHub settings during implementation or tests.

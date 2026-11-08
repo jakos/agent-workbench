@@ -1,0 +1,60 @@
+# Advisory and inactive by default. All executable inputs come from exact base.
+name: Advisory PR review
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, edited]
+permissions:
+  contents: read
+concurrency:
+  group: pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  fork:
+    if: github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Explicit fork coverage
+        run: echo 'AI review skipped-fork; no model contact or write credentials.' >> "$GITHUB_STEP_SUMMARY"
+  review:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.base.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          version: "0.12.21"
+          enable-cache: false
+      - run: uv python install 3.14.7
+      - name: Collect trusted-base evidence and validate secret name (no credentials)
+        id: prepare
+        run: |
+          if test -f plugins/task-flow/scripts/pr_review.py; then
+            uv run --python 3.14.7 --script plugins/task-flow/scripts/pr_review.py prepare --event "$GITHUB_EVENT_PATH" --repository "$GITHUB_REPOSITORY" --state "$RUNNER_TEMP/pr-review.json"
+          else
+            echo 'AI review unavailable: base has no review implementation.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: One tool-free model request
+        if: steps.prepare.outputs.ready == 'true'
+        env:
+          REVIEW_SECRET: ${{ secrets[steps.prepare.outputs.secret_name] }}
+        run: uv run --python 3.14.7 --script plugins/task-flow/scripts/pr_review.py invoke --event "$GITHUB_EVENT_PATH" --repository "$GITHUB_REPOSITORY" --state "$RUNNER_TEMP/pr-review.json"
+      - name: Publish current summary with separate credentials
+        if: always()
+        env:
+          PUBLICATION_TOKEN: ${{ github.token }}
+        run: |
+          if test -f plugins/task-flow/scripts/pr_review.py; then
+            uv run --python 3.14.7 --script plugins/task-flow/scripts/pr_review.py publish --event "$GITHUB_EVENT_PATH" --repository "$GITHUB_REPOSITORY" --state "$RUNNER_TEMP/pr-review.json"
+          fi
+      - name: Remove scratch evidence
+        if: always()
+        run: rm -f "$RUNNER_TEMP/pr-review.json"

@@ -62,6 +62,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import launch
+import publish_credentials
 
 OUTPUT_CAP = 20000  # characters of stdout/stderr kept per stream
 LINE_CAP = 1_000_000  # one stdout line is at most this many bytes before it is dropped
@@ -493,7 +494,11 @@ def run_cli(
     """
     secrets = secrets or []
     worktree = Path(worktree)
-    env = benchmark_environment(env)
+    try:
+        publish_credentials.runner(env)
+    except publish_credentials.CredentialError as exc:
+        raise CliRefused(str(exc)) from None
+    env = publish_credentials.clean(benchmark_environment(env))
     with tempfile.TemporaryDirectory(prefix="task-flow-cli-") as tmp:
         prompt_file = Path(tmp) / "prompt.md"
         last_message_file = Path(tmp) / "last-message.txt"
