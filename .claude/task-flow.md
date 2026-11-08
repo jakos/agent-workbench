@@ -49,6 +49,7 @@ uvx ruff==0.17.3 format --check plugins/task-flow/scripts plugins/task-flow/test
 claude plugin validate .
 uv run --script plugins/task-flow/tests/test_phase_gate.py
 uv run --script plugins/task-flow/tests/test_publish_task.py
+uv run --script plugins/task-flow/tests/test_pr_review.py
 ```
 
 ## Architecture rules
@@ -59,6 +60,11 @@ uv run --script plugins/task-flow/tests/test_publish_task.py
   `/task-flow:task-release`, configured in `.claude/task-flow.release.toml`.
 
 ## Publication
+
+Advisory PR review is independently opt-in through `.claude/task-flow.pr-review.toml`
+and the trusted-base `REVIEW.md` policy. It remains disabled here. Setup, spending,
+fork exclusions and the provider contract follow REVIEW.md. Human owners
+retain merge decisions; AI review is not a required deterministic check.
 
 Publication stays disabled here. An operator may opt in with the project-only
 `[publish]` table in the project policy configuration. Keep the publication
