@@ -685,5 +685,26 @@ class PhaseGateTest(GateFixture):
         self.assertEqual(list((self.project / ".work").glob(".gate-context-*")), [])
 
 
+class PublicationSnapshotTest(GateFixture):
+    def test_opt_in_snapshots_before_review_and_refuses_capture_failure(self) -> None:
+        self.start()
+        self.evidence(1)
+        self.call("transition", target="checking")
+        self.config.write_text(
+            'preset = "supervised"\n[publish]\nenabled = true\nrepository = "owner/repo"\nremote = "origin"\ncredential_env = "TASK_FLOW_PUBLISH_TOKEN"\n',
+            encoding="utf-8",
+        )
+        with patch(
+            "publish_task.capture_review", side_effect=ValueError("source changed")
+        ) as capture:
+            with self.assertRaisesRegex(gate.Refusal, "source changed"):
+                self.call("transition", target="reviewing")
+            capture.assert_called_once()
+        self.assertEqual(gate.status(self.task)[1]["phase"], "checking")
+        with patch("publish_task.capture_review") as capture:
+            self.call("transition", target="reviewing")
+            capture.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

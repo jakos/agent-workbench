@@ -130,8 +130,8 @@ Absent bounds leave command-line budgets unchanged; never increase a saved bound
 With a file, Phase: finish calls `policy.py decide push` and `policy.py decide pr`:
 exit 0 permits the action, exit 1 asks. Policy wins over conflicting Finish values;
 doctor warns. Local commit and remove-worktree still follow Finish. Merge is
-parsed, validated and shown; hook enforcement and PR/merge execution belong to
-other tasks. This task supplies script decisions and mandatory agent instructions.
+parsed, validated and shown; merge execution is deferred. Opt-in push/PR execution
+uses the external trusted launcher in Phase: finish.
 Release skips its approval gate only for `policy.py decide release` returning
 `auto (explicit)` (exit 0); every preset and legacy mode asks.
 
@@ -835,6 +835,53 @@ All `epics.py` calls run from the repository root:
    worktree question in step 5. If the script exits non-zero, show stderr: exit 2 means it
    refused and deleted nothing, exit 1 means some entries (`failed: <name>`) could not be
    removed and the rest was pruned. Do not retry or delete by hand.
+
+### Trusted publication handoff (project opt-in)
+
+Without `[publish] enabled = true` in project policy, follow the finish steps above
+unchanged. With opt-in, the existing local finish sequence still runs, including
+the finish gate, deterministic SDLC refresh, summary, record and trailers, and commit.
+Require records enabled and a validated current review with Human attention. The
+review transition must have captured `publication-review-<n>.md` before reviewer
+launch. Missing evidence refuses publication; never manufacture a snapshot after
+review. No arbitrary source edits are allowed after that snapshot.
+
+After the local commit, the token-free orchestrator runs
+`uv run --script plugins/task-flow/scripts/publish_task.py prepare --task-dir <absolute-task-dir>`
+and shows `publication-request.md` and its digest. This replaces direct push/PR
+execution in finish step 7 for opted-in tasks. Plan approval grants neither push nor
+PR creation. Each action uses its own current policy decision or a human grant from
+`grant-push` / `grant-pr` with the same `--task-dir` in a separate interactive
+terminal. These grants bind the request digest, including attempt, plan, reviewed
+source, checks and final commit. A changed request invalidates both grants.
+
+The operator launches `publish_task.py publish --task-dir <absolute-task-dir>` using
+uv from a separate trusted terminal or service outside the model process tree.
+Only that process receives the configured `TASK_FLOW_PUBLISH_*` credential. Never
+put it in the orchestrator, native subagents, API runners, CLI profiles, prompts,
+command arguments, repository files or metrics; `pass_env` is not an exception.
+The publisher isolates GitHub CLI configuration and authentication and records
+non-secret resumable receipts. Authentication failures never fall back to a cached
+personal login. Local completion may proceed independently of this external handoff.
+
+Retain `publication*.md` through pruning. Do not remove worktrees or branches needed
+by descendants. Report three outcomes separately: local completion, PR publication,
+and integration into `main`. Children open draft against the parent recorded by task
+status. The external operator runs `advance` with `--task-dir` after parent delivery;
+it verifies fresh main ancestry, retargets to `main`, and returns while still draft.
+On a later invocation it requires successful required checks on the current test
+merge commit, binding both the head and new base, before marking ready. Humans merge
+with merge commits. `delivery` (or `autopilot.py delivery <absolute-task-dir>`) verifies
+the exact task commit against freshly fetched `main`; a merged intermediate PR stays
+undelivered. No automatic merge, force-rebase or branch deletion is supported.
+
+
+For publication opt-in, `publication-check-<n>.md` binds the source before checks;
+the review transition rejects source changes made during or after those checks.
+The transition to review-approved seals the review digest
+and source snapshot in `publication-approval-<n>.md`. Subsequent review edits refuse
+publication. Agent write tools cannot create or edit publication evidence or grants;
+trusted workflow scripts own these retained Markdown files.
 
 ## Release — /task-flow:task-release
 

@@ -13,6 +13,7 @@ import sys
 import tomllib
 from pathlib import Path
 
+import publish_credentials
 import risk
 from role_contracts import _sections
 
@@ -68,12 +69,37 @@ def parse(text: str) -> dict:
         raise ConfigError("policy: invalid TOML") from None
     # Only display bounded identifier keys; never echo arbitrary paths or values.
     unknown = set(data) - (
-        {key for key in DEFAULTS if "." not in key} | {"preset", "autopilot", "metrics"}
+        {key for key in DEFAULTS if "." not in key}
+        | {"preset", "autopilot", "metrics", "publish"}
     )
     if unknown:
         key = min(unknown)
         label = key if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", key) else "policy"
         raise ConfigError(f"{label}: unknown key or table (see templates/policy.toml)")
+    if "publish" in data:
+        table = data["publish"]
+        if not isinstance(table, dict) or set(table) != {
+            "enabled",
+            "repository",
+            "remote",
+            "credential_env",
+        }:
+            raise ConfigError(
+                "publish: expected enabled, repository, remote, credential_env"
+            )
+        if (
+            type(table["enabled"]) is not bool
+            or not isinstance(table["repository"], str)
+            or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}",
+                table["repository"],
+            )
+            or table["repository"].split("/")[1] in (".", "..")
+            or not isinstance(table["remote"], str)
+            or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", table["remote"])
+            or not publish_credentials.valid_name(table["credential_env"])
+        ):
+            raise ConfigError("publish: invalid configuration")
     if "autopilot" in data:
         table = data.pop("autopilot")
         if not isinstance(table, dict) or set(table) - {"mode"}:
@@ -141,6 +167,7 @@ def load(project: Path, home: Path) -> dict:
     sources = dict.fromkeys(values, "default")
     files = []
     preset = "supervised"
+    publication = {"enabled": False}
     for source, path in (("user", home / CONFIG), ("project", project / CONFIG)):
         if not path.exists():
             continue
@@ -151,6 +178,9 @@ def load(project: Path, home: Path) -> dict:
                 f"{source} policy: cannot read UTF-8 configuration"
             ) from None
         files.append({"source": source, "path": str(path.resolve())})
+        configured_publish = data.pop("publish", None)
+        if source == "project" and configured_publish is not None:
+            publication = configured_publish
         incoming = {}
         origins = {}
         if "preset" in data:
@@ -172,6 +202,7 @@ def load(project: Path, home: Path) -> dict:
             values[key], sources[key] = value, origins[key]
     return {
         "schema": "policy/1",
+        "publish": publication,
         "mode": "configured" if files else "legacy",
         "preset": preset if files else "legacy",
         "values": values,

@@ -425,3 +425,37 @@ evidence and rejects contradictory approvals. Only validated reviews are publish
 status transitions remain orchestration's responsibility. Each invocation writes
 `role-reviewer-<invocation-id>.json` next to task artifacts; backlog records live beside
 run artifacts as `role-backlog-<invocation-id>.json` and survive run cleanup.
+
+
+## Publication evidence (project opt-in)
+
+`[publish]` in project policy enables the external trusted publication handoff.
+The `publication-review-<n>.md` snapshot is captured at the gated review transition;
+`publication-request.md` binds the approved source tree and exact final commit.
+Separate `publication-grant-push.md` and `publication-grant-pr.md` bind human grants
+to its digest when policy asks. `publication-receipt.md` records non-secret progress
+and exact main ancestry delivery. All are retained Markdown evidence under the root
+task directory, preserved by pruning. No token belongs in any artifact.
+
+Credentials named `TASK_FLOW_PUBLISH_*` belong only to a trusted launcher outside
+model sessions and their process trees. Runners reject their presence before model
+contact, reject profile credential/pass_env collisions, and filter GitHub auth from
+model child environments. This is an operational boundary, not an OS sandbox.
+Agent roles may not invoke publish_task.py, commit, push, or mutate PRs.
+The orchestrator prepares a token-free request after the ordinary local finish
+commit; a separate operator terminal authorizes push and PR independently and launches
+publication. Plan approval grants neither action. Without project opt-in the legacy
+finish behavior remains unchanged. Publication never executes merge policy.
+
+Local `done`, PR publication, and delivery to `main` are distinct. A merged flag on
+an intermediate PR proves no delivery. Require fresh main ancestry of the exact task
+commit, preserve merge commits and descendant branches, and keep child PRs draft
+against their recorded parent until retargeted checks pass. See orchestration's
+trusted publication handoff and the policy setup checklist.
+
+For publication opt-in, `publication-check-<n>.md` binds the source before checks;
+the review transition rejects source changes made during or after those checks.
+The transition to review-approved seals the review digest
+and source snapshot in `publication-approval-<n>.md`. Subsequent review edits refuse
+publication. Agent write tools cannot create or edit publication evidence or grants;
+trusted workflow scripts own these retained Markdown files.

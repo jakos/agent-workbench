@@ -59,6 +59,28 @@ class PolicyTest(unittest.TestCase):
             code = policy.main([*args, "--project", str(self.project)])
         return code, out.getvalue(), err.getvalue()
 
+    def test_publish_requires_complete_project_opt_in(self) -> None:
+        config = '[publish]\nenabled = true\nrepository = "owner/repo"\nremote = "origin"\ncredential_env = "TASK_FLOW_PUBLISH_TOKEN"\n'
+        self.assertEqual(self.load()["publish"], {"enabled": False})
+        self.write(config, user=True)
+        self.assertEqual(self.load()["publish"], {"enabled": False})
+        self.write(config)
+        self.assertTrue(self.load()["publish"]["enabled"])
+        for bad in (
+            config.replace("enabled = true", 'enabled = "true"'),
+            config.replace(
+                "owner/repo", "https://sentinel-secret@github.com/owner/repo"
+            ),
+            config.replace("TASK_FLOW_PUBLISH_TOKEN", "GH_TOKEN"),
+            config.replace("origin", "--all"),
+            config.replace('remote = "origin"\n', ""),
+            config + 'unknown = "sentinel-secret"\n',
+        ):
+            self.write(bad)
+            with self.assertRaises(policy.ConfigError) as caught:
+                self.load()
+            self.assertNotIn("sentinel-secret", str(caught.exception))
+
     def test_legacy(self) -> None:
         loaded = self.load()
         self.assertEqual(loaded["mode"], "legacy")

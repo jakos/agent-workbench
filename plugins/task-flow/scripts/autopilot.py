@@ -97,6 +97,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import epics
@@ -1000,6 +1001,29 @@ def next_step(run: dict) -> str:
     return f"run {candidate['id']}"
 
 
+def delivery_line(task_dir: Path, *, home: Path | None = None) -> str:
+    """Fresh main ancestry, never infer delivery from local done or a merged PR."""
+    import publish_task
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="task-flow-delivery-") as tmp:
+            publisher = publish_task.Publisher(
+                task_dir, home or Path.home(), dict(os.environ), Path(tmp)
+            )
+            return (
+                "delivered to main" if publisher.delivery() else "undelivered to main"
+            )
+    except (
+        ValueError,
+        OSError,
+        publish_task.task_record.RecordError,
+        publish_task.epics.EpicError,
+    ):
+        raise Refusal(
+            "publication delivery refused; inspect local evidence and credentials"
+        ) from None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1010,6 +1034,7 @@ def main() -> int:
     stack_parser.add_argument(
         "--implementer-kind", choices=("claude", "profile"), default="claude"
     )
+    sub.add_parser("delivery").add_argument("path", type=Path)
     base_parser = sub.add_parser("base")
     base_parser.add_argument("path")
     base_parser.add_argument("task_id")
@@ -1040,6 +1065,8 @@ def main() -> int:
             output = stack(
                 args.path, args.ids, external=args.implementer_kind == "profile"
             )
+        elif args.command == "delivery":
+            output = delivery_line(args.path)
         elif args.command == "base":
             output = base_line(args.path, args.task_id)
         else:

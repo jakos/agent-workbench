@@ -28,6 +28,7 @@ from pathlib import Path
 
 import cli_driver
 import models
+import publish_credentials
 import risk
 import role_contracts
 import role_runtime
@@ -438,6 +439,10 @@ def prepare_read_role(args: argparse.Namespace) -> Context:
             "role is not configured for external execution; use its Claude agent"
         )
     ctx.profile_name = ctx.selection["profile"]
+    try:
+        publish_credentials.runner(os.environ, ctx.profiles)
+    except publish_credentials.CredentialError as exc:
+        raise Refusal(str(exc)) from None
     profile = ctx.profiles[ctx.profile_name]
     if profile["api_key_env"] and not models.api_key(profile):
         raise Refusal(f"{profile['api_key_env']} is not set")
@@ -527,6 +532,10 @@ def prepare(args) -> Context:
             "subagent — nothing for this runner to do"
         )
     ctx.profile_name = ctx.selection["profile"]
+    try:
+        publish_credentials.runner(os.environ, ctx.profiles)
+    except publish_credentials.CredentialError as exc:
+        raise Refusal(str(exc)) from None
     profile = ctx.profiles[ctx.profile_name]
     if profile["api_key_env"] and not models.api_key(profile):
         raise Refusal(
@@ -711,6 +720,10 @@ def run_cli_once(ctx: Context, profile: dict, extra_prompt: str = ""):
 
 def run_cli(ctx: Context) -> role_runtime.SessionResult:
     """One CLI producer run with exactly one repair process on an invalid result."""
+    try:
+        publish_credentials.runner(os.environ, ctx.profiles)
+    except publish_credentials.CredentialError as exc:
+        raise Refusal(str(exc)) from None
     profile = ctx.profiles[ctx.profile_name]
     chain: list[dict] = []
     repairs = 0
@@ -1030,6 +1043,10 @@ def args_profile(ctx) -> str | None:
 
 def main(argv: list[str] | None = None) -> int:
     try:
+        try:
+            publish_credentials.runner(os.environ)
+        except publish_credentials.CredentialError as exc:
+            raise Refusal(str(exc)) from None
         args = parse_args(argv)
     except Refusal as exc:
         print(f"refused: {exc}", file=sys.stderr)

@@ -46,6 +46,7 @@ checks = [
   ["uvx", "ruff==0.17.3", "format", "--check", "plugins/task-flow/scripts", "plugins/task-flow/tests", "plugins/task-flow/bench"],
   ["claude", "plugin", "validate", "."],
   ["uv", "run", "--script", "plugins/task-flow/tests/test_phase_gate.py"],
+  ["uv", "run", "--script", "plugins/task-flow/tests/test_publish_task.py"],
 ]
 [[targets.task-flow.version_files]]
 path = "plugins/task-flow/.claude-plugin/plugin.json"

@@ -647,13 +647,27 @@ def decide(
                             "done",
                         ):
                             checks(task, 0, commands)
+                        if target == "checking" and loaded["publish"]["enabled"]:
+                            import publish_task
+
+                            publish_task.capture_check(task, home=home or Path.home())
                         if target == "reviewing":
                             checks(task, new_round, commands)
+                            if loaded["publish"]["enabled"]:
+                                import publish_task
+
+                                publish_task.capture_review(
+                                    task, home=home or Path.home()
+                                )
                         if (
                             target in ("review-approved", "done")
                             and review(task, new_round, plan, commands)[0] != "APPROVED"
                         ):
                             raise Refusal("finish requires APPROVED review")
+                        if target == "review-approved" and loaded["publish"]["enabled"]:
+                            import publish_task
+
+                            publish_task.seal_review(task, home=home or Path.home())
                         if target == "baseline":
                             event["run"] = run_context(task)
                     elif target == "escalated":
@@ -742,6 +756,10 @@ def decide(
                             if requested < 1 or requested > limit:
                                 raise Refusal("round cap or invalid round")
                             checks(task, 0, commands)
+                        if action == "check" and loaded["publish"]["enabled"]:
+                            import publish_task
+
+                            publish_task.capture_check(task, home=home or Path.home())
                         if action == "implement" and requested > 1:
                             reason = stopped(task, requested - 1, plan, commands, limit)
                             if reason:

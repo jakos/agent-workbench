@@ -503,5 +503,43 @@ class RulesTest(unittest.TestCase):
         self.assertEqual(decision, "deny")
 
 
+class PublicationRuleTest(unittest.TestCase):
+    def test_all_agent_roles_deny_publisher(self) -> None:
+        import rules
+
+        for role in rules.ROLES:
+            for command in (
+                "uv run --script plugins/task-flow/scripts/publish_task.py publish",
+                "python publish_task.py prepare",
+                "python autopilot.py delivery .work/t1",
+                "gh api repos/owner/repo/pulls --method POST",
+                "git push origin task/x",
+                "gh pr ready 1",
+                "git commit -m x",
+            ):
+                self.assertIsNotNone(
+                    rules.check_command(command, role), (role, command)
+                )
+
+    def test_agents_cannot_write_publication_authority(self) -> None:
+        import rules
+
+        for role in rules.ROLES:
+            for name in (
+                "check-1",
+                "review-1",
+                "approval-1",
+                "request",
+                "grant-push",
+                "grant-pr",
+                "receipt",
+            ):
+                self.assertIsNotNone(
+                    rules.check_write(
+                        f".work/t1/publication-{name}.md", role, root=Path.cwd()
+                    )
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
