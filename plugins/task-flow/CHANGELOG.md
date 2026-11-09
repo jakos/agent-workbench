@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.15.0 - 2026-11-09
+
+### Features
+
+- feat(task-flow): add an advisory AI review for every same-repository PR (c5f6e86d9573)
+
+- feat(task-flow): publish approved task branches through protected PRs (574f3d1820ab)
+
 ## 0.14.0 - 2026-11-08
 
 ### Features
