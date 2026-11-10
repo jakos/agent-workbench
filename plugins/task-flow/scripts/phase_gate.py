@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -167,6 +168,10 @@ def initialize(task: Path, base: str, *, home: Path | None = None) -> None:
 
 
 def attempt(text: str, fields: dict, task: Path | None = None) -> str:
+    return digest(json.dumps(attempt_inputs(text, fields, task)).encode())
+
+
+def attempt_inputs(text: str, fields: dict, task: Path | None = None) -> list:
     history = text.split("\n## History\n")[1].split("\n## Log\n")[0]
     retries = []
     for line in history.splitlines():
@@ -185,7 +190,7 @@ def attempt(text: str, fields: dict, task: Path | None = None) -> str:
                 if not archive.is_file():
                     raise Refusal("retry has no archived spend evidence")
             retries.append(f"{match[2]}/{match[1]}")
-    return digest(json.dumps([fields["base"], fields["branch"], retries]).encode())
+    return [fields["base"], fields["branch"], retries]
 
 
 @contextmanager
@@ -222,6 +227,42 @@ def log_entries(task: Path) -> list[dict]:
     return parse_log(path.read_bytes(), task.name)
 
 
+def resolved_attempt(
+    text: str,
+    fields: dict,
+    task: Path,
+    entries: list[dict],
+    *,
+    pending_base: str | None = None,
+) -> str:
+    """Resolve raw identity through validated links, without reading the log again."""
+    raw = attempt(text, fields, task)
+    plan = digest(read(task / "plan.md").encode("utf-8"))
+    links = [e for e in entries if e.get("rebase") and e["plan"] == plan]
+    seen = set()
+    for event in reversed(links):
+        if event["attempt"] in seen:
+            continue
+        seen.add(event["attempt"])
+        link = event["rebase"]
+        if raw == link["new_attempt"]:
+            return event["attempt"]
+        if raw == link["old_attempt"]:
+            if pending_base == link["new_base"]:
+                history = text.split("\n## History\n")[1].split("\n## Log\n")[0]
+                if rebase_history(event) in history.splitlines():
+                    raise Refusal("completed base change was edited outside the gate")
+                return event["attempt"]
+            raise Refusal("base change publication is pending; repeat exact rebase")
+        if any(
+            raw in (e["rebase"]["old_attempt"], e["rebase"]["new_attempt"])
+            for e in links
+            if e["attempt"] == event["attempt"]
+        ):
+            raise Refusal("base does not match latest controlled change")
+    return raw
+
+
 def record_digest(task: Path) -> str:
     """Digest a validated canonical snapshot, stable across repeated finish requests.
 
@@ -230,7 +271,7 @@ def record_digest(task: Path) -> str:
     entries = log_entries(task)
     text, fields = status(task)
     plan_hash = digest(read(task / "plan.md").encode("utf-8"))
-    attempt_hash = attempt(text, fields, task)
+    attempt_hash = resolved_attempt(text, fields, task, entries)
     for index, event in enumerate(entries):
         if (
             event["allowed"]
@@ -299,7 +340,7 @@ def parse_log(raw: bytes, task_id: str) -> list[dict]:
         }
         if (
             not isinstance(event, dict)
-            or set(event) != required
+            or set(event) not in (required, required | {"rebase"})
             or event["schema"] != SCHEMA
             or event["task"] != task_id
             or type(event["allowed"]) is not bool
@@ -337,6 +378,81 @@ def parse_log(raw: bytes, task_id: str) -> list[dict]:
                 or state["round"] < 0
             ):
                 raise Refusal("invalid logged state")
+        if "rebase" in event:
+            link = event["rebase"]
+            keys = {
+                "schema",
+                "old_base",
+                "new_base",
+                "old_attempt",
+                "new_attempt",
+                "branch",
+                "retries",
+            }
+            if (
+                not isinstance(link, dict)
+                or set(link) != keys
+                or link["schema"] != "base-change/1"
+                or event["action"] != "rebase"
+                or not event["allowed"]
+                or event["run"] is None
+                or event["before"] != {"phase": "approved", "round": 0}
+                or event["after"] != event["before"]
+                or not all(
+                    isinstance(link[k], str)
+                    and link[k]
+                    and not any(c.isspace() for c in link[k])
+                    for k in ("old_base", "new_base", "branch")
+                )
+                or link["old_base"] == link["new_base"]
+                or not isinstance(link["retries"], list)
+                or not all(
+                    isinstance(r, str) and re.fullmatch(r"[\w-]+/\d+", r)
+                    for r in link["retries"]
+                )
+                or any(
+                    link[f"{side}_attempt"]
+                    != digest(
+                        json.dumps(
+                            [link[f"{side}_base"], link["branch"], link["retries"]]
+                        ).encode()
+                    )
+                    for side in ("old", "new")
+                )
+            ):
+                raise Refusal("invalid base-change evidence")
+            prior = [
+                e
+                for e in entries
+                if e["allowed"]
+                and e["plan"] == event["plan"]
+                and e["attempt"] == event["attempt"]
+            ]
+            approvals = [e for e in prior if e["action"] == "approve"]
+            changes = [e for e in prior if e.get("rebase")]
+            previous = (
+                changes[-1]["rebase"]["new_attempt"] if changes else event["attempt"]
+            )
+            started = any(
+                e["action"] == "baseline"
+                or e["action"] == "transition"
+                and e["after"] == {"phase": "baseline", "round": 0}
+                for e in prior
+            )
+            if (
+                not approvals
+                or started
+                or previous != link["old_attempt"]
+                or event["source"] != approvals[-1]["source"]
+            ):
+                raise Refusal("disconnected base-change evidence")
+            if changes and (
+                changes[-1]["run"] != event["run"]
+                or any(
+                    link[k] != changes[-1]["rebase"][k] for k in ("branch", "retries")
+                )
+            ):
+                raise Refusal("base change changed task identity")
         entries.append(event)
     return entries
 
@@ -423,7 +539,9 @@ def stopped(
     return None
 
 
-def run_context(task: Path) -> str | None:
+def run_context(
+    task: Path, entries: list[dict] | None = None, *, pending_base: str | None = None
+) -> str | None:
     """Resolve membership from persisted run tables, never a model-supplied flag."""
     import autopilot
 
@@ -447,15 +565,17 @@ def run_context(task: Path) -> str | None:
     # A fabricated in-progress status must not bypass the between-task breaker.
     # Resumes are permitted only after an audited start for this attempt.
     text, fields = status(task)
+    entries = log_entries(task) if entries is None else entries
+    identity = resolved_attempt(text, fields, task, entries, pending_base=pending_base)
     started = any(
         e["allowed"]
-        and e["attempt"] == attempt(text, fields, task)
+        and e["attempt"] == identity
         and (
             e["action"] == "baseline"
             or e["action"] == "transition"
             and e["after"]["phase"] == "baseline"
         )
-        for e in log_entries(task)
+        for e in entries
     )
     if not started:
         for row in run["tasks"]:
@@ -491,6 +611,102 @@ def authorize(entries: list[dict], event: dict, loaded: dict, task: Path) -> Non
         raise Refusal("policy no longer authorizes this plan")
 
 
+def local_branch(task: Path, branch: str) -> bool:
+    """Check exact local refs, never revision expressions or shell command text."""
+    ref = "refs/heads/" + branch
+    for args in (["check-ref-format", ref], ["show-ref", "--verify", "--quiet", ref]):
+        result = subprocess.run(
+            ["git", *args], cwd=task.parent.parent, capture_output=True, check=False
+        )
+        if result.returncode:
+            if args[0] == "show-ref" and result.returncode == 1:
+                return False
+            raise Refusal("cannot verify local branch")
+    return True
+
+
+def rebase_history(event: dict) -> str:
+    link = event["rebase"]
+    return f"- {event['time']} rebase — {link['old_base']} → {link['new_base']}; phase gate"
+
+
+def rebase_status(
+    task: Path,
+    text: str,
+    state: dict,
+    entries: list[dict],
+    event: dict,
+    base: str | None,
+) -> str | None:
+    """Validate dispatch-time base selection before recording or publishing metadata."""
+    import autopilot
+
+    if state["phase"] != "approved" or state["round"] != 0:
+        raise Refusal("rebase requires approved round 0")
+    if state["worktree"] != "none" or (task / "worktree").exists():
+        raise Refusal("rebase requires no task isolation")
+    if any(
+        e["allowed"]
+        and e["attempt"] == event["attempt"]
+        and (
+            e["action"] == "baseline"
+            or e["action"] == "transition"
+            and e["after"] == {"phase": "baseline", "round": 0}
+        )
+        for e in entries
+    ):
+        raise Refusal("baseline has already started")
+    if local_branch(task, state["branch"]):
+        raise Refusal("task branch already exists")
+    run = run_context(task, entries, pending_base=base)
+    if run is None:
+        raise Refusal("rebase requires one eligible linked run")
+    event["run"] = run
+    try:
+        required = autopilot.base_line(str(task.parent / "_autopilot" / run), task.name)
+    except autopilot.Refusal as exc:
+        raise Refusal("autopilot base: " + str(exc)) from exc
+    if base != required:
+        raise Refusal("requested base differs from required stacked base")
+    if not local_branch(task, required):
+        raise Refusal("required local base branch does not exist")
+    changes = [
+        e
+        for e in entries
+        if e.get("rebase")
+        and e["plan"] == event["plan"]
+        and e["attempt"] == event["attempt"]
+    ]
+    if changes and changes[-1]["run"] != run:
+        raise Refusal("linked run changed after controlled base selection")
+    if base == state["base"]:
+        return None
+    raw = attempt(text, state, task)
+    pending = (
+        changes[-1] if changes and changes[-1]["rebase"]["old_attempt"] == raw else None
+    )
+    if pending is None:
+        new_state = {**state, "base": base}
+        event["rebase"] = {
+            "schema": "base-change/1",
+            "old_base": state["base"],
+            "new_base": base,
+            "old_attempt": raw,
+            "new_attempt": attempt(text, new_state, task),
+            "branch": state["branch"],
+            "retries": attempt_inputs(text, state, task)[2],
+        }
+    else:
+        if pending["rebase"]["new_base"] != base:
+            raise Refusal("only the exact pending base change may resume")
+    result = text.replace(f"- base: {state['base']}\n", f"- base: {base}\n", 1)
+    return result.replace(
+        "\n## Log\n",
+        f"\n{rebase_history(pending or event)}\n## Log\n",
+        1,
+    )
+
+
 def decide(
     task: Path,
     action: str,
@@ -505,6 +721,7 @@ def decide(
     approved_attempt: str | None = None,
     worktree: str | None = None,
     message: str | None = None,
+    base: str | None = None,
 ) -> dict:
     """Record before returning permission; legacy repositories retain existing behaviour."""
     task = task.resolve()
@@ -539,7 +756,13 @@ def decide(
                 text, state = status(task)
                 before = {k: state[k] for k in ("phase", "round")}
                 event["before"] = event["after"] = before
-                event["attempt"] = attempt(text, state, task)
+                event["attempt"] = resolved_attempt(
+                    text,
+                    state,
+                    task,
+                    entries,
+                    pending_base=base if action == "rebase" else None,
+                )
                 if (
                     approved_attempt is not None
                     and approved_attempt != event["attempt"]
@@ -596,6 +819,10 @@ def decide(
                             raise Refusal("approval requires planned round 0")
                         event["after"] = {"phase": "approved", "round": 0}
                         result_text = replace_status(text, state, "approved", 0, source)
+                elif action == "rebase":
+                    authorize(entries, event, loaded, task)
+                    event["ceiling"] = 0
+                    result_text = rebase_status(task, text, state, entries, event, base)
                 elif action == "transition":
                     if target not in PHASES:
                         raise Refusal("unknown target phase")
@@ -625,7 +852,7 @@ def decide(
                             reason = stopped(task, new_round - 1, plan, commands, limit)
                             if reason:
                                 raise Refusal(reason)
-                        event["run"] = run_context(task)
+                        event["run"] = run_context(task, entries)
                     elif target in (
                         "baseline",
                         "checking",
@@ -669,7 +896,7 @@ def decide(
 
                             publish_task.seal_review(task, home=home or Path.home())
                         if target == "baseline":
-                            event["run"] = run_context(task)
+                            event["run"] = run_context(task, entries)
                     elif target == "escalated":
                         if new_round != state["round"] or not stopped(
                             task, new_round, plan, commands, limit
@@ -709,7 +936,7 @@ def decide(
                     )
                 elif action == "dispatch":
                     authorize(entries, event, loaded, task)
-                    event["run"] = run_context(task)
+                    event["run"] = run_context(task, entries)
                 elif action == "direct-status-mutation":
                     raise Refusal(
                         "use phase_gate.py transition; direct status mutation is refused"
@@ -770,12 +997,15 @@ def decide(
                         ):
                             raise Refusal("finish requires APPROVED review")
                     event["run"] = (
-                        run_context(task) if action not in ("finish", "prune") else None
+                        run_context(task, entries)
+                        if action not in ("finish", "prune")
+                        else None
                     )
                 else:
                     raise Refusal("unsupported gate action")
                 event.update(allowed=True, reason="allowed")
             except (ValueError, OSError) as exc:
+                event.pop("rebase", None)
                 event["reason"] = str(exc)
                 event["after"] = event["before"]
             append(task, event)
@@ -853,7 +1083,7 @@ def human_confirmation(task: Path, action: str, ceiling: int) -> tuple[str, str]
         raise Refusal("run human authorization in a separate interactive terminal")
     token = digest((task / "plan.md").read_bytes())
     text, fields = status(task)
-    attempt_token = attempt(text, fields, task)
+    attempt_token = resolved_attempt(text, fields, task, log_entries(task))
     challenge = f"{action} {task.name} {token} {attempt_token} {ceiling}"
     print(f"Review {task / 'plan.md'}; type exactly: {challenge}")
     if input().strip() != challenge:
@@ -1045,6 +1275,7 @@ def main(argv: list[str] | None = None) -> int:
         "action",
         choices=(
             "initialize",
+            "rebase",
             "transition",
             "approve",
             "grant",
@@ -1095,6 +1326,7 @@ def main(argv: list[str] | None = None) -> int:
             approved_attempt=approved_attempt,
             worktree=args.worktree,
             message=args.message,
+            base=args.base,
         )
         print(json.dumps(result, sort_keys=True))
         return 0

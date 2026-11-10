@@ -65,7 +65,14 @@ interactive terminal and type the displayed plan-digest challenge. Do not run th
 human command through model tools. Chat acknowledgement or `UserPromptSubmit`
 occurrence does not establish provenance. The prompt hook captures task context only.
 
-Transition approved to baseline at round 0, using `--worktree .work/<id>/worktree`
+For an unstarted stacked task, compute the required base with `autopilot.py base`
+and validate it through
+`uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/phase_gate.py" rebase --task-dir <absolute-task-dir> --base <required-branch>`.
+This is a controlled metadata change, not Git rebase. It requires current plan
+approval, approved round 0, exactly one eligible persisted run, dispatch permission,
+completed dependencies and an existing required local base branch. No task branch,
+worktree metadata, worktree directory or audited baseline start may exist yet.
+Then create isolation from that validated base. Transition approved to baseline at round 0, using `--worktree .work/<id>/worktree`
 when the worktree was created, or `--worktree none` otherwise. Complete checks-0
 before routing preparation or implementation. Transition to implementing with
 `--round 1`, then checking and reviewing. Both Claude and external routes obey these
@@ -73,6 +80,16 @@ same gates. Every implementer launch prompt must include exactly one line
 `Task directory: <absolute-task-dir>`; context captured from an exact task-run,
 task-check or task-finish command must agree. Do not infer identity from agent_type
 absence, search for a convenient active task or bypass an ambiguous context refusal.
+
+Rebase preserves approval source, phase, round and extra-round ceilings. Its durable
+plan-bound evidence links old and new raw attempt digests to the existing approval;
+History prose alone grants nothing. Existing gate logs and unchanged attempt hashes
+remain compatible. Changed plan, branch, authorized retry history or an unrecorded
+base requires fresh approval. Direct header edits are refused. If status replacement
+fails after the decision append, repeat the exact rebase: all prerequisites are
+revalidated before completing that recorded mutation. A completed repeat before
+isolation preserves status bytes and creates no approval. Audit failure prevents
+publication. With no policy, rebase changes nothing; use the legacy header procedure.
 
 After a validated review, transition to review-approved on APPROVED, escalated on
 no progress or the round cap, or implementing with the next round otherwise.
@@ -233,7 +250,9 @@ subcommand resolves any role with `--override` (`models.py select <role> [--over
 
 ## Phase: baseline (round 0)
 
-1. Refuse unless `plan-approved` is yes.
+1. Refuse unless `plan-approved` is yes. For a newly dispatched stacked task under
+   configured policy, compute and validate its base with the controlled `rebase`
+   action above before creating isolation. On re-entry, keep the existing base.
 2. Isolation — **skip this step only when the worktree path `.work/<id>/worktree`
    exists, or when `status.md` says `worktree: none` and branch `task/<id>` already exists
    (`git rev-parse --verify task/<id>`)**; reuse it and never re-create it. Otherwise,
@@ -242,7 +261,9 @@ subcommand resolves any role with `--override` (`models.py select <role> [--over
    fail, `git switch -c task/<id>` in the repository root and record `worktree: none`.
    If the root has uncommitted changes and there is no worktree, stop and ask (a
    precondition, not a stop).
-3. Set round 0, phase `baseline`. When the `checker` entry of `models.py roles` (as in
+3. Set round 0, phase `baseline` (configured policy: `transition --to baseline` with
+   `--worktree .work/<id>/worktree` or `--worktree none`), then run baseline checks.
+   When the `checker` entry of `models.py roles` (as in
    "Choosing each role's model") has kind `script`: from the repository root, in the
    background, run
    `uv run --quiet --script "${CLAUDE_PLUGIN_ROOT}/scripts/gates.py" --task-dir <abs .work/<id>> --worktree <abs worktree | none> --round 0`
@@ -557,13 +578,17 @@ completed, and that the `## Tasks` table matches the epic's rows and dependencie
    `--auto` question behavior. Never refresh digest records after the gate silently. The breaker
    defaults to Claude tokens. In `all` scope it includes reported external tokens and
    retains conservative future stage estimates; pass the persisted `--budget-scope`.
-   - `run <id>`: if the task has not started (phase `approved`, no worktree), set its
-     `status.md` `base:` to the output of
+   - `run <id>`: if the task has not started (phase `approved`, no worktree), compute
+     the required base with
      `uv run --quiet --script "${CLAUDE_PLUGIN_ROOT}/scripts/autopilot.py" base .work/_autopilot/<run-id> <id>`
      (that is `task/<id>` of the last `done` row of this run in table order, or the run's
      base if none; for a `source: epic` run: the epic's `base` for a root row and
-     `task/<parent>` for a child of a done parent); then follow The loop for that task
-     from its current phase.
+     `task/<parent>` for a child of a done parent). With configured policy, validate
+     and record it using `phase_gate.py rebase --task-dir <absolute-task-dir> --base <required-branch>`
+     with the uv invocation above. Only legacy repositories edit the `status.md`
+     `base:` header directly. Then create isolation from that base, transition to
+     baseline with worktree metadata, and run baseline checks, following The loop
+     from the task's current phase. Never rebase an already started task.
      Every within-task stop (BLOCKED, APPROVED, no progress, round cap) and "never stop
      early" apply unchanged and end only that task. On `review-approved` follow Phase:
      finish steps 1–4, 6 and 7, and replace step 5 with: no push, no PR, keep the worktree,
