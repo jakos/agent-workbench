@@ -811,7 +811,8 @@ class RebaseTest(GateFixture):
             ],
         )
         for _, kwargs in self.git_calls:
-            self.assertEqual(kwargs["cwd"], self.project)
+            # Windows runners expose temp dirs by 8.3 short name; compare resolved paths.
+            self.assertEqual(Path(kwargs["cwd"]).resolve(), self.project.resolve())
             self.assertFalse(kwargs.get("shell", False))
 
     def test_git_verification_errors_refuse_without_status_mutation(self) -> None:
