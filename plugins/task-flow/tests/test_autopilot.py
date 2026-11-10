@@ -1474,6 +1474,48 @@ from test_phase_gate import GateFixture
 
 
 class WorkflowBreakerTest(GateFixture):
+    def test_start_gate_approval_then_parent_completion_and_base_selection(
+        self,
+    ) -> None:
+        import phase_gate
+
+        self.approve()
+        parent = self.task.with_name("parent")
+        parent.mkdir()
+        (parent / "plan.md").write_text(
+            (self.task / "plan.md").read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        (parent / "status.md").write_text(
+            "# Status: parent\n- phase: approved\n", encoding="utf-8"
+        )
+        run = self.project / ".work" / "_autopilot" / "r1"
+        run.mkdir(parents=True)
+        (run / "run.md").write_text(
+            "# Autopilot: r1\n- mode: full\n- base: main\n- budget: none\n- planning-tokens: 0\n- continue-past: none\n- bootstrap: none\n- state: running\n## Tasks\n| # | Task | Depends on | Tokens used |\n| --- | --- | --- | --- |\n| 1 | parent | - | 0 |\n| 2 | t1 | parent | 0 |\n## History\n",
+            encoding="utf-8",
+        )
+        with mock.patch.object(
+            phase_gate,
+            "local_branch",
+            side_effect=lambda task, branch: branch == "task/parent",
+        ):
+            with self.assertRaises(phase_gate.Refusal):
+                self.call("rebase", base="task/parent")
+            (parent / "status.md").write_text(
+                "# Status: parent\n- phase: done\n", encoding="utf-8"
+            )
+            selected = autopilot.base_line(str(run), "t1")
+            self.assertEqual(selected, "task/parent")
+            self.call("rebase", base=selected)
+        self.call("transition", target="baseline")
+        self.call("baseline", number=0)
+        self.evidence(0)
+        self.call("transition", target="implementing", number=1)
+        self.call("implement", number=1)
+        self.assertEqual(
+            sum(e["action"] == "approve" for e in phase_gate.log_entries(self.task)), 1
+        )
+
     def test_fabricated_in_progress_phase_does_not_bypass_breaker(self) -> None:
         import phase_gate
 

@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+import epics
 import phase_gate as gate
 
 PLAN = """# Plan: Test
@@ -683,6 +684,495 @@ class PhaseGateTest(GateFixture):
             )
         )
         self.assertEqual(list((self.project / ".work").glob(".gate-context-*")), [])
+
+
+class RebaseTest(GateFixture):
+    def setUp(self) -> None:
+        super().setUp()
+        self.refs = {"main", "task/parent", "task/sibling", "epic-base"}
+        self.git_calls = []
+        fake = patch("phase_gate.subprocess.run", side_effect=self.git)
+        fake.start()
+        self.addCleanup(fake.stop)
+        self.run = self.project / ".work" / "_autopilot" / "r1"
+        self.run.mkdir(parents=True)
+        self.link_run()
+
+    def git(self, argv: list[str], **kwargs: object) -> object:
+        self.git_calls.append((argv, kwargs))
+        self.assertEqual(argv[0], "git")
+        self.assertTrue(argv[-1].startswith("refs/heads/"))
+        exists = argv[-1].removeprefix("refs/heads/") in self.refs
+        return gate.subprocess.CompletedProcess(
+            argv, 0 if argv[1] == "check-ref-format" or exists else 1
+        )
+
+    def parent(self, task_id: str, phase: str) -> None:
+        directory = self.task.parent / task_id
+        directory.mkdir(exist_ok=True)
+        (directory / "status.md").write_text(
+            f"# Status: {task_id}\n- phase: {phase}\n## History\n", encoding="utf-8"
+        )
+        (directory / "plan.md").write_text(PLAN, encoding="utf-8")
+
+    def link_run(
+        self, *, epic: bool = False, root: bool = False, parent_phase: str = "done"
+    ) -> None:
+        self.parent("parent", parent_phase)
+        self.parent("sibling", "done")
+        deps = "-" if root else "parent"
+        source = "- source: epic\n- epic: demo\n" if epic else ""
+        (self.run / "run.md").write_text(
+            f"# Autopilot: r1\n- mode: full\n- base: main\n- budget: none\n- planning-tokens: 0\n- continue-past: none\n- bootstrap: none\n{source}- state: running\n## Tasks\n| # | Task | Depends on | Tokens used |\n| --- | --- | --- | --- |\n| 1 | parent | - | 0 |\n| 2 | sibling | - | 0 |\n| 3 | t1 | {deps} | 0 |\n## History\n- fixture\n",
+            encoding="utf-8",
+        )
+        if epic:
+            directory = self.task.parent / "_epics" / "demo"
+            directory.mkdir(parents=True, exist_ok=True)
+            value = epics.Epic(
+                epic_id="demo",
+                title="T",
+                goal="G",
+                base="epic-base",
+                state="active",
+                delivery="per-task",
+                active_run="r1",
+                tasks=[
+                    epics.EpicTask(number=1, task_id="parent", depends=None),
+                    epics.EpicTask(number=2, task_id="sibling", depends=None),
+                    epics.EpicTask(
+                        number=3, task_id="t1", depends=None if root else "parent"
+                    ),
+                ],
+                history=["- 2020-01-05T00:00:00Z created — fixture"],
+            )
+            (directory / "epic.md").write_text(
+                epics.render_epic(value), encoding="utf-8", newline="\n"
+            )
+
+    def test_start_approval_survives_stack_and_epic_dispatch(self) -> None:
+        for epic, root, expected in (
+            (False, False, "task/sibling"),
+            (True, False, "task/parent"),
+            (True, True, "epic-base"),
+        ):
+            with self.subTest(epic=epic, root=root):
+                (self.task / "gates.jsonl").unlink(missing_ok=True)
+                self.set_state("planned", 0)
+                self.link_run(epic=epic, root=root, parent_phase="approved")
+                self.approve()
+                original = gate.log_entries(self.task)[-1]["attempt"]
+                self.parent("parent", "done")
+                self.call("grant", source="user", human=True, ceiling=4)
+                self.call("rebase", base=expected)
+                before = (self.task / "status.md").read_bytes()
+                repeat = self.call("rebase", base=expected)
+                self.assertEqual(before, (self.task / "status.md").read_bytes())
+                self.assertEqual(repeat["attempt"], original)
+                self.assertEqual(gate.status(self.task)[1]["base"], expected)
+                self.call("transition", target="baseline", worktree=".work/t1/worktree")
+                self.call("baseline", number=0)
+                self.evidence(0)
+                self.call("prepare", number=1)
+                self.call("transition", target="implementing", number=1)
+                self.call("implement", number=1)
+                self.call("transition", target="checking")
+                self.call("check", number=1)
+                self.evidence(1)
+                self.call("transition", target="reviewing")
+                self.review(1)
+                self.call("transition", target="review-approved")
+                self.call("finish")
+                snapshot = gate.record_digest(self.task)
+                self.call("finish")
+                self.assertEqual(snapshot, gate.record_digest(self.task))
+                self.assertEqual(
+                    sum(e["action"] == "approve" for e in gate.log_entries(self.task)),
+                    1,
+                )
+                self.assertIn(b"fixture text that must survive", before)
+
+    def test_cli_rebase_checks_explicit_local_refs(self) -> None:
+        self.approve()
+        with patch("builtins.print"):
+            self.assertEqual(
+                gate.main(
+                    ["rebase", "--task-dir", str(self.task), "--base", "task/sibling"]
+                ),
+                0,
+            )
+        self.assertEqual(
+            [call[0] for call in self.git_calls],
+            [
+                ["git", "check-ref-format", "refs/heads/task/t1"],
+                ["git", "show-ref", "--verify", "--quiet", "refs/heads/task/t1"],
+                ["git", "check-ref-format", "refs/heads/task/sibling"],
+                ["git", "show-ref", "--verify", "--quiet", "refs/heads/task/sibling"],
+            ],
+        )
+        for _, kwargs in self.git_calls:
+            # Windows runners expose temp dirs by 8.3 short name; compare resolved paths.
+            self.assertEqual(Path(kwargs["cwd"]).resolve(), self.project.resolve())
+            self.assertFalse(kwargs.get("shell", False))
+
+    def test_git_verification_errors_refuse_without_status_mutation(self) -> None:
+        self.approve()
+        before = (self.task / "status.md").read_bytes()
+        for code in (1, 128):
+            with (
+                self.subTest(code=code),
+                patch(
+                    "phase_gate.subprocess.run",
+                    return_value=gate.subprocess.CompletedProcess([], code),
+                ),
+            ):
+                with self.assertRaisesRegex(gate.Refusal, "verify local branch"):
+                    self.call("rebase", base="task/sibling")
+                self.assertEqual(before, (self.task / "status.md").read_bytes())
+
+    def test_refusals_preserve_status(self) -> None:
+        self.approve()
+        status = (self.task / "status.md").read_bytes()
+        log = (self.task / "gates.jsonl").read_bytes()
+        run = (self.run / "run.md").read_bytes()
+        cases = (
+            "approval",
+            "base",
+            "branch-missing",
+            "membership",
+            "ambiguous",
+            "paused",
+            "stopped",
+            "parent",
+            "breaker",
+            "phase",
+            "round",
+            "metadata",
+            "directory",
+            "task-branch",
+            "plan",
+            "branch",
+            "unrecorded-base",
+            "retry",
+        )
+        for case in cases:
+            with self.subTest(case=case):
+                self.write("plan.md", PLAN)
+                (self.task / "status.md").write_bytes(status)
+                (self.task / "gates.jsonl").write_bytes(log)
+                (self.run / "run.md").write_bytes(run)
+                self.parent("parent", "done")
+                self.refs.add("task/sibling")
+                self.refs.discard("task/t1")
+                other = self.run.parent / "r2"
+                if other.exists():
+                    (other / "run.md").unlink()
+                    other.rmdir()
+                if case == "approval":
+                    (self.task / "gates.jsonl").write_bytes(b"")
+                elif case == "branch-missing":
+                    self.refs.remove("task/sibling")
+                elif case == "membership":
+                    (self.run / "run.md").write_text(
+                        run.decode()
+                        .replace("\r\n", "\n")
+                        .replace("| 3 | t1 | parent | 0 |\n", ""),
+                        encoding="utf-8",
+                    )
+                elif case == "ambiguous":
+                    other.mkdir()
+                    (other / "run.md").write_bytes(run)
+                elif case in ("paused", "stopped", "breaker"):
+                    change = (
+                        run.decode()
+                        .replace("\r\n", "\n")
+                        .replace("state: running", f"state: {case}")
+                        if case != "breaker"
+                        else run.decode()
+                        .replace("\r\n", "\n")
+                        .replace("budget: none", "budget: 1")
+                    )
+                    (self.run / "run.md").write_text(change, encoding="utf-8")
+                elif case == "parent":
+                    self.parent("parent", "approved")
+                elif case in (
+                    "phase",
+                    "round",
+                    "metadata",
+                    "branch",
+                    "unrecorded-base",
+                ):
+                    old, new = {
+                        "phase": ("phase: approved", "phase: baseline"),
+                        "round": ("round: 0", "round: 1"),
+                        "metadata": ("worktree: none", "worktree: .work/t1/worktree"),
+                        "branch": ("branch: task/t1", "branch: task/other"),
+                        "unrecorded-base": ("base: main", "base: task/parent"),
+                    }[case]
+                    self.write("status.md", status.decode().replace(old, new))
+                elif case == "directory":
+                    (self.task / "worktree").mkdir()
+                elif case == "task-branch":
+                    self.refs.add("task/t1")
+                elif case == "plan":
+                    self.write(
+                        "plan.md", PLAN.replace("Exercise gates.", "Changed plan.")
+                    )
+                elif case == "retry":
+                    archive = (
+                        self.task.parent
+                        / "_epics"
+                        / "demo"
+                        / "attempts"
+                        / "t1"
+                        / "attempt-1"
+                    )
+                    archive.mkdir(parents=True)
+                    (archive / "spend.md").write_text("fixture", encoding="utf-8")
+                    self.write(
+                        "status.md",
+                        status.decode().replace(
+                            "- created",
+                            "- created\n- round reset to 0 for attempt 1 of epic demo — authorized by the user ",
+                        ),
+                    )
+                before = (self.task / "status.md").read_bytes()
+                with self.assertRaises(gate.Refusal):
+                    self.call(
+                        "rebase", base="wrong" if case == "base" else "task/sibling"
+                    )
+                self.assertEqual(before, (self.task / "status.md").read_bytes())
+                if (self.task / "worktree").exists():
+                    (self.task / "worktree").rmdir()
+
+    def test_append_failure_and_exact_publication_replay(self) -> None:
+        self.approve()
+        before = (self.task / "status.md").read_bytes()
+        with (
+            patch.object(gate, "append", side_effect=OSError("disk full")),
+            self.assertRaises(gate.Refusal),
+        ):
+            self.call("rebase", base="task/sibling")
+        self.assertEqual(before, (self.task / "status.md").read_bytes())
+        with (
+            patch.object(gate, "publish", side_effect=OSError("sharing")),
+            self.assertRaises(gate.Refusal),
+        ):
+            self.call("rebase", base="task/sibling")
+        self.assertEqual(before, (self.task / "status.md").read_bytes())
+        pending = gate.log_entries(self.task)[-1]
+        with self.assertRaises(gate.Refusal):
+            self.call("transition", target="baseline")
+        with self.assertRaises(gate.Refusal):
+            self.call("rebase", base="task/parent")
+        self.call("rebase", base="task/sibling")
+        self.assertIn(pending["time"], gate.read(self.task / "status.md"))
+        self.assertEqual(sum("rebase" in e for e in gate.log_entries(self.task)), 1)
+
+    def test_tampered_links_and_identity_cannot_authorize(self) -> None:
+        self.approve()
+        self.call("rebase", base="task/sibling")
+        status = (self.task / "status.md").read_bytes()
+        original = gate.log_entries(self.task)
+        for key, value in (
+            ("new_attempt", "0" * 64),
+            ("schema", "base-change/2"),
+            ("branch", "task/other"),
+        ):
+            with self.subTest(key=key):
+                entries = json.loads(json.dumps(original))
+                entries[-1]["rebase"][key] = value
+                self.write(
+                    "gates.jsonl", "".join(json.dumps(e) + "\n" for e in entries)
+                )
+                with self.assertRaises(gate.Refusal):
+                    self.call("transition", target="baseline")
+                self.assertEqual(status, (self.task / "status.md").read_bytes())
+        self.write("gates.jsonl", json.dumps(original[-1]) + "\n")
+        with self.assertRaisesRegex(gate.Refusal, "disconnected"):
+            self.call("baseline")
+        self.write("gates.jsonl", "".join(json.dumps(e) + "\n" for e in original))
+        self.write("plan.md", PLAN + "\nchanged plan bytes\n")
+        with self.assertRaises(gate.Refusal):
+            self.call("transition", target="baseline")
+        self.write("plan.md", PLAN)
+        for old, new in (
+            ("base: task/sibling", "base: main"),
+            ("base: task/sibling", "base: unrelated"),
+            ("branch: task/t1", "branch: other"),
+        ):
+            self.write(
+                "status.md",
+                status.decode().replace(old, new) + "fabricated rebase History\n",
+            )
+            with self.assertRaises(gate.Refusal):
+                self.call("transition", target="baseline")
+            with self.assertRaises(gate.Refusal):
+                self.call("rebase", base="task/sibling")
+
+    def test_baseline_evidence_and_legacy_rebase(self) -> None:
+        self.approve()
+        self.call("transition", target="baseline")
+        text = gate.read(self.task / "status.md").replace(
+            "phase: baseline", "phase: approved"
+        )
+        self.write("status.md", text)
+        with self.assertRaisesRegex(gate.Refusal, "baseline has already"):
+            self.call("rebase", base="task/sibling")
+        self.config.unlink()
+        before = (self.task / "status.md").read_bytes()
+        self.assertEqual(self.call("rebase", base="anything")["reason"], "legacy")
+        self.assertEqual(before, (self.task / "status.md").read_bytes())
+
+    def test_pending_change_revalidates_run_plan_and_identity(self) -> None:
+        self.approve()
+        with (
+            patch.object(gate, "publish", side_effect=OSError("interrupted")),
+            self.assertRaises(gate.Refusal),
+        ):
+            self.call("rebase", base="task/sibling")
+        status = gate.read(self.task / "status.md")
+        run = gate.read(self.run / "run.md")
+        for case in ("plan", "branch", "retry", "base", "run", "missing-ref"):
+            with self.subTest(case=case):
+                self.write("plan.md", PLAN)
+                self.write("status.md", status)
+                (self.run / "run.md").write_text(run, encoding="utf-8")
+                self.refs.add("task/sibling")
+                if case == "plan":
+                    self.write("plan.md", PLAN + "\nchanged\n")
+                elif case == "branch":
+                    self.write(
+                        "status.md",
+                        status.replace("branch: task/t1", "branch: changed"),
+                    )
+                elif case == "retry":
+                    archive = (
+                        self.task.parent
+                        / "_epics"
+                        / "demo"
+                        / "attempts"
+                        / "t1"
+                        / "attempt-1"
+                    )
+                    archive.mkdir(parents=True, exist_ok=True)
+                    (archive / "spend.md").write_text("fixture", encoding="utf-8")
+                    self.write(
+                        "status.md",
+                        status.replace(
+                            "- created",
+                            "- created\n- round reset to 0 for attempt 1 of epic demo — authorized by the user ",
+                        ),
+                    )
+                elif case == "base":
+                    self.write(
+                        "status.md", status.replace("base: main", "base: unrelated")
+                    )
+                elif case == "run":
+                    (self.run / "run.md").write_text(
+                        run.replace("state: running", "state: paused"), encoding="utf-8"
+                    )
+                else:
+                    self.refs.remove("task/sibling")
+                before = (self.task / "status.md").read_bytes()
+                with self.assertRaises(gate.Refusal):
+                    self.call("rebase", base="task/sibling")
+                self.assertEqual(before, (self.task / "status.md").read_bytes())
+
+    def test_changed_identity_refuses_baseline_and_protected_execution(self) -> None:
+        self.approve()
+        self.call("rebase", base="task/sibling")
+        approved = gate.read(self.task / "status.md")
+        self.evidence(0)
+        archive = self.task.parent / "_epics" / "demo" / "attempts" / "t1" / "attempt-1"
+        archive.mkdir(parents=True)
+        (archive / "spend.md").write_text("fixture", encoding="utf-8")
+        for case in ("plan", "branch", "retry", "base", "history"):
+            with self.subTest(case=case):
+                self.write("plan.md", PLAN + ("\nchanged\n" if case == "plan" else ""))
+                text = approved
+                if case == "branch":
+                    text = text.replace("branch: task/t1", "branch: other")
+                elif case == "retry":
+                    text = text.replace(
+                        "- created",
+                        "- created\n- round reset to 0 for attempt 1 of epic demo — authorized by the user ",
+                    )
+                elif case in ("base", "history"):
+                    text = text.replace("base: task/sibling", "base: unrelated")
+                    if case == "history":
+                        text = text.replace(
+                            "\n## Log\n",
+                            "\n- 2020-01-05T00:00:00Z rebase — task/sibling → unrelated; phase gate\n## Log\n",
+                        )
+                self.write("status.md", text)
+                for action, kwargs in (
+                    ("rebase", {"base": "task/sibling"}),
+                    ("transition", {"target": "baseline"}),
+                ):
+                    before = (self.task / "status.md").read_bytes()
+                    with self.assertRaisesRegex(gate.Refusal, "authorization"):
+                        self.call(action, **kwargs)
+                    self.assertEqual(before, (self.task / "status.md").read_bytes())
+                self.write(
+                    "status.md",
+                    text.replace("phase: approved", "phase: implementing").replace(
+                        "round: 0", "round: 1"
+                    ),
+                )
+                with self.assertRaisesRegex(gate.Refusal, "authorization"):
+                    self.call("implement", number=1)
+
+    def test_human_tokens_grant_ceiling_and_multiple_links(self) -> None:
+        self.approve()
+        original = gate.log_entries(self.task)[-1]["attempt"]
+        self.call("grant", source="user", human=True, ceiling=4)
+        self.call("rebase", base="task/sibling")
+        # A later dispatch may change the ordinary stack again before isolation.
+        self.parent("sibling", "approved")
+        # To keep dispatch eligible, remove the now-unfinished unrelated row.
+        path = self.run / "run.md"
+        path.write_text(
+            gate.read(path)
+            .replace("| 2 | sibling | - | 0 |\n", "")
+            .replace("| 3 | t1", "| 2 | t1"),
+            encoding="utf-8",
+        )
+        self.call("rebase", base="task/parent")
+        with (
+            patch.object(gate.sys.stdin, "isatty", return_value=True),
+            patch.object(gate.sys.stdout, "isatty", return_value=True),
+            patch(
+                "builtins.input",
+                return_value=f"grant t1 {gate.digest(PLAN.encode())} {original} 5",
+            ),
+            patch("builtins.print"),
+        ):
+            self.assertEqual(
+                gate.human_confirmation(self.task, "grant", 5)[1], original
+            )
+        # An old-base rollback cannot select an earlier link for replay.
+        completed = gate.read(self.task / "status.md")
+        self.write("status.md", completed.replace("base: task/parent", "base: main"))
+        with self.assertRaises(gate.Refusal):
+            self.call("rebase", base="task/sibling")
+        self.write("status.md", completed)
+        self.call("transition", target="baseline")
+        self.evidence(0)
+        self.call("transition", target="implementing", number=1)
+        for number in range(1, 4):
+            self.call("transition", target="checking")
+            self.evidence(number)
+            self.call("transition", target="reviewing")
+            self.review(number, "CHANGES_REQUESTED")
+            self.call("transition", target="implementing", number=number + 1)
+        self.call("implement", number=4)
+        self.call("transition", target="checking")
+        self.evidence(4)
+        self.call("transition", target="reviewing")
+        self.review(4, "CHANGES_REQUESTED")
+        with self.assertRaisesRegex(gate.Refusal, "round cap"):
+            self.call("transition", target="implementing", number=5)
 
 
 class PublicationSnapshotTest(GateFixture):
