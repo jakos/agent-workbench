@@ -20,7 +20,9 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
+from typing import ClassVar
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 SCRIPT = SCRIPTS / "gates.py"
@@ -414,6 +416,150 @@ class GatesTest(unittest.TestCase):
         self.assertIn("[two words]", text)
         self.assertIn("refused:", text)
         self.assertIn("'%'", text)
+
+
+SANDBOX_IMAGE = "example.invalid/uv:py3.14@sha256:" + "c" * 64
+ENV_PROBE = (
+    "import json, os; print(json.dumps({k: os.environ.get(k) for k in "
+    "('SENTINEL_PROVIDER_TOKEN', 'HTTPS_PROXY', 'SANDBOX_VISIBLE', 'HOME')}))"
+)
+
+
+class SandboxGatesTest(unittest.TestCase):
+    """AC1/AC5: the checker without and with [sandbox] (fake engine, no daemon)."""
+
+    HOST: ClassVar[dict] = {
+        "SENTINEL_PROVIDER_TOKEN": "sentinel-secret",
+        "HTTPS_PROXY": "http://proxy.invalid:8080",
+        "SANDBOX_VISIBLE": "visible",
+    }
+    setUp = GatesTest.setUp
+    write_plan = GatesTest.write_plan
+    env = GatesTest.env
+    run_gates = GatesTest.run_gates
+    checks = GatesTest.checks
+    rows = GatesTest.rows
+
+    def models_file(self, text: str) -> None:
+        path = self.repo / ".claude" / "task-flow.models.toml"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def enable(self, backend: str = "podman") -> None:
+        self.models_file(
+            f'[sandbox]\nbackend = "{backend}"\nimage = "{SANDBOX_IMAGE}"\n'
+            'pass_env = ["SANDBOX_VISIBLE"]\n'
+        )
+
+    def run_in_process(self, engine_factory=None):
+        import argparse
+        import contextlib
+        import io
+        from unittest import mock
+
+        from test_sandbox import FakeEngine
+
+        fake = FakeEngine(Path(tempfile.mkdtemp(dir=self.root)))
+        factory = engine_factory or (lambda _policy: fake.engine)
+        args = argparse.Namespace(
+            task_dir=str(self.task),
+            worktree=str(self.worktree),
+            round=1,
+            timeout_seconds=60,
+        )
+        with (
+            mock.patch.dict(os.environ, self.HOST),
+            mock.patch.object(gates.models, "user_file", lambda: self.home / "x.toml"),
+            mock.patch.object(gates.sandbox, "engine_for", side_effect=factory),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(gates.run(args), 0)
+        return fake
+
+    def test_without_sandbox_environment_is_inherited_unchanged(self):
+        # exits 0 only when the host values reach the command, as before this task
+        probe = (
+            "import os, sys; sys.exit(0 if os.environ.get('SENTINEL_PROVIDER_TOKEN') "
+            "== 'sentinel-secret' and os.environ.get('HTTPS_PROXY') else 1)"
+        )
+        self.write_plan([" ".join([quoted(sys.executable), "-c", quoted(probe)])])
+        with unittest.mock.patch.dict(os.environ, self.HOST):
+            done = self.run_gates("--timeout-seconds", "60")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        text = self.checks()
+        self.assertIn("| PASS |", text)
+        self.assertNotIn("Sandbox:", text)
+        self.assertFalse((self.task / "sandbox-policy.json").exists())
+
+    def test_enabled_sandbox_filters_environment_and_names_the_sandbox(self):
+        self.enable()
+        self.write_plan([f'python -c "{ENV_PROBE}"'])
+        fake = self.run_in_process()
+        text = self.checks()
+        self.assertIn("| PASS |", text)
+        self.assertIn("Sandbox: podman", text)
+        seen = fake.containers()[0]
+        self.assertNotIn("SENTINEL_PROVIDER_TOKEN", seen["env"])
+        self.assertNotIn("HTTPS_PROXY", seen["env"])
+        self.assertEqual(seen["env"]["SANDBOX_VISIBLE"], "visible")
+        self.assertEqual(seen["env"]["HOME"], "/tmp")
+        self.assertEqual(Path(seen["mounts"]["/work"]), self.worktree.resolve())
+        run = fake.run_calls()[0]
+        self.assertNotIn("visible", run, "values never travel on argv")
+        self.assertTrue((self.task / "sandbox-policy.json").is_file())
+
+    def test_enabled_sandbox_failures_are_errors_never_host_runs(self):
+        self.enable()
+        marker = self.worktree / "host-ran.txt"
+        self.write_plan(
+            [
+                "git status",
+                quoted(r"C:\tools\check.exe"),
+                "no-such-tool-in-image --flag",
+                "python -c \"open('host-ran.txt', 'w')\"",
+            ]
+        )
+        self.run_in_process()
+        rows = self.rows(self.checks())
+        self.assertEqual(len(rows), 4, "nothing is silently Not run")
+        self.assertEqual(
+            [row.split(" | ")[2] for row in rows], ["ERROR", "ERROR", "ERROR", "PASS"]
+        )
+        text = self.checks()
+        self.assertIn("refused: git runs on the host only", text)
+        self.assertIn("host executable", text)
+        self.assertIn("not available in the sandbox image", text)
+        self.assertNotIn("program not found", text)
+        # an unavailable engine: every command is ERROR sandbox:, none runs on the host
+        import sandbox
+
+        def missing(_policy):
+            raise sandbox.SandboxError("podman not found on PATH")
+
+        self.write_plan(["python -c \"open('host-ran.txt', 'w')\""])
+        marker.unlink(missing_ok=True)
+        self.run_in_process(engine_factory=missing)
+        text = self.checks()
+        self.assertIn("| ERROR |", text)
+        self.assertIn("sandbox: podman not found on PATH", text)
+        self.assertFalse(marker.exists())
+
+    def test_captured_policy_survives_a_disabled_configuration(self):
+        self.enable()
+        self.write_plan(['python -c "print(1)"'])
+        self.run_in_process()
+        self.models_file('[sandbox]\nbackend = "none"\n')
+        fake = self.run_in_process()
+        self.assertEqual(len(fake.containers()), 1, "still sandboxed after the edit")
+        self.assertIn("Sandbox: podman", self.checks())
+
+    def test_invalid_sandbox_configuration_refuses(self):
+        self.models_file('[sandbox]\nbackend = "srt"\n')
+        self.write_plan(['python -c "print(1)"'])
+        done = self.run_gates("--timeout-seconds", "5")
+        self.assertEqual(done.returncode, 2)
+        self.assertIn("not implemented yet", done.stderr)
+        self.assertFalse((self.task / "checks-1.md").exists())
 
 
 from test_phase_gate import GateFixture

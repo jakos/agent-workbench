@@ -218,6 +218,23 @@ backlog = "claude:opus"       # backlog agent's frontmatter default: opus
 reviewer_independence = "warn"           # warn, different-model or different-provider
 command_timeout_seconds = 600           # per verification command run by scripts/gates.py (default 600)
 
+# Opt-in command sandbox (scripts/sandbox.py), disabled in the shipped template. Only the
+# PROJECT file may set it (<repo-root>/.claude/task-flow.models.toml); a [sandbox] table in
+# the user file is an error. When enabled, the API-loop implementer's run_command and
+# post_edit commands, the script checker's verification commands and the benchmark's
+# hidden checks run in a container: no network, a non-root user, a read-only root, only
+# the worktree mounted, memory and PID limits. Model calls, keys and git stay on the host.
+# The policy is captured into .work/<id>/sandbox-policy.json on first use, so later edits
+# cannot turn it off for a running task.
+# [sandbox]
+# backend = "podman"  # "none" (default), "podman" or "docker"; "srt" and "wsl" are refused for now
+# image = "ghcr.io/astral-sh/uv:python3.14-bookworm-slim@sha256:e1869b1ddae289d6aa3c76649d0b663c11cb3215371146bf7dce95c821935fea"  # required when enabled: pinned by digest and already local (task-flow never pulls)
+# memory = "1g"  # memory limit "<n>k|m|g"; swap is limited to the same value (default "1g")
+# pids_limit = 512  # process limit, >= 1 (default 512)
+# tmp_size = "1g"  # size of the private /tmp tmpfs (default "1g")
+# pass_env = []  # extra non-secret variable NAMES for the workload; keys, tokens, proxies and runtime settings are refused (default [])
+# provision = false  # true: mount the dependency volume built by `sandbox.py provision` from uv.lock (default false: stdlib only)
+
 # Opt-in plan routing, disabled in the shipped template. Remove the scalar
 # implementer key before using [roles.implementer] in the same file.
 # Tables merge by leaf across files; a scalar replaces the whole table (and vice versa).

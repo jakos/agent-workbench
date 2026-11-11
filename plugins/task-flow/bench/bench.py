@@ -54,6 +54,14 @@ Design decisions, briefly:
   saved runs; rows are comparable only when fingerprint and harness version are equal.
   `save --replace` re-saves a run after `--extend`.
 
+- D12 sandbox: the source repository's `[sandbox]` policy (scripts/sandbox.py) is read
+  once when the run starts and carried as data, never re-read from a scratch copy: it
+  is written into every generated per-run models file, captured into every seeded task
+  folder, and captured into each hidden check's private task folder, so gates.py and
+  implement.py run the visible and hidden commands under the originating policy even
+  if a model edits configuration in its worktree. Hidden files are written only into the
+  temporary probe copy, never into the implementer's worktree or container mount.
+
 Limits, stated plainly: the scope rule (in_scope) is a heuristic over the plan text,
 and the cost of a subscription profile is not known, so such profiles are compared on
 tokens, rounds, time and acceptance instead of dollars.
@@ -89,6 +97,7 @@ sys.path.insert(0, str(SCRIPTS))
 import cli_driver
 import launch
 import models
+import sandbox
 
 HARNESS_VERSION = 3
 DEFAULT_CASES_DIR = BENCH_DIR / "cases"
@@ -1741,6 +1750,8 @@ class Runner:
         self.timeout_seconds = args.timeout_seconds
         self.keep_code = args.keep_code
         self.profiles, _roles = models.load(project)
+        # D12: the originating policy, carried into every scratch copy as data
+        self.sandbox = models.sandbox_policy(project)
         self.results_path = self.run_dir / "results.jsonl"
         self.rows: list[dict] = []
         self.spent = 0.0
@@ -1792,6 +1803,11 @@ class Runner:
         lines = [f'[roles]\nimplementer = "{name}"\n', f"[profiles.{name}]"]
         for key, value in settings.items():
             lines.append(f"{key} = {toml_value(value)}")
+        policy = getattr(self, "sandbox", sandbox.DISABLED)
+        if policy.enabled:
+            lines.append("\n[sandbox]")
+            for key, value in policy.table().items():
+                lines.append(f"{key} = {toml_value(value)}")
         write_text(
             run_dir / ".claude" / "task-flow.models.toml", "\n".join(lines) + "\n"
         )
@@ -2169,6 +2185,7 @@ class Runner:
     ) -> tuple[Path, None]:
         task = run_dir / ".work" / case["id"]
         write_text(task / "plan.md", case["plan"].read_text(encoding="utf-8"))
+        sandbox.write_capture(task, getattr(self, "sandbox", sandbox.DISABLED))
         write_text(
             task / "status.md",
             "\n".join(
@@ -2429,6 +2446,10 @@ class Runner:
                 + "\n".join(case["commands"])
                 + "\n```\n",
             )
+            sandbox.write_capture(
+                hidden_task, getattr(self, "sandbox", sandbox.DISABLED)
+            )
+
             for rel in case["hidden_files"]:
                 data = git(
                     case["repo"], "show", f"{case['result_commit']}:{rel}"

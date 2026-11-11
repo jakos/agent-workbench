@@ -60,7 +60,22 @@ as `__pycache__`; nothing is ever committed.
 
 Limits, stated plainly: commands the model runs are matched as text only (a script can
 still push or commit), they run without a shell (no pipes or redirects), their network
-access is not blocked, and only an allowlisted set of environment variables reaches them.
+access is not blocked unless the repository enables the sandbox (below), and only an
+allowlisted set of environment variables reaches them.
+
+Sandbox (opt-in, `[sandbox]` in the project's models.toml, see scripts/sandbox.py):
+prepare() captures the policy into the task folder before any model call
+(sandbox.capture) and refuses the round when the engine is not installed. Then every
+run_command and post_edit command of an API-driver profile runs in a Podman or Docker
+container instead of on the host — the same rules.py check first, POSIX argument
+splitting on every platform, the program resolved inside the image, only the worktree
+mounted (its .git read-only), no network, a non-root user, memory and PID limits, and
+only the portable allowlisted values plus the sandbox's pass_env in the environment.
+A git command or a host executable is denied; a sandbox failure is a tool error and is
+never retried on the host. The model calls, the snapshot/staging git calls and the file
+tools stay on the host. The runner adapter tells the model about that boundary. A
+driver "cli" profile is not sandboxed by this executor: the CLI keeps its own sandbox
+flags and the environment contract below.
 On Windows a program that resolves to a `.cmd`/`.bat` file is started through
 `cmd.exe /d /s /c` with one quoted command line (see scripts/launch.py), and such a
 command is rejected if it contains `& | < > ^ % !` or a newline, inside quotes too.
@@ -106,6 +121,7 @@ import cli_driver
 import drivers
 import models
 import publish_credentials
+import sandbox
 from launch import cmd_command_line, cmd_exe, is_cmd_script
 from rules import check_command, check_write
 
@@ -164,6 +180,21 @@ read_file, write_file, edit_file, list_files, grep, run_command and blocked.
   command must not contain `& | < > ^ % !` or a newline, inside quotes too.
 - When you are done, reply with a short final message and NO tool call. That ends the
   round. List the files you changed in that message.
+"""
+
+# Appended to ADAPTER when the repository enables the sandbox: the command boundary.
+SANDBOX_ADAPTER = """\
+### Command sandbox
+
+run_command and post_edit commands run in a {backend} container, not on this machine:
+Linux, image {image}, the worktree mounted at /work (the working directory), no network,
+a non-root user, a read-only root filesystem with a private writable /tmp, and memory
+and process limits. Arguments are split POSIX-style on every platform; the program is
+looked up inside the image, so use program names such as `python` or `uv`, or
+worktree-relative paths with `/` — never a Windows path or a `.exe`/`.cmd`. git is not
+available there and is refused: the runner stages your changes on the host. Packages
+cannot be downloaded; use what the image{dependencies} provides. Your file tools
+(read_file, write_file, edit_file, list_files, grep) work on the host worktree directly.
 """
 
 # The adapter a driver "cli" profile gets instead: the CLI agent has its own tools, so
@@ -577,6 +608,8 @@ class Context:
         self.heartbeat: float
         self.verbose: bool
         self.routing: dict | None = None
+        self.sandbox: sandbox.Policy = sandbox.DISABLED
+        self.engine: sandbox.Engine | None = None
         self.progress_path: Path
 
 
@@ -708,6 +741,20 @@ def prepare(args) -> Context:
             f"profile {name!r}: environment variable {profile['api_key_env']} is not set"
         )
     ctx.profile_name = name
+    try:
+        ctx.sandbox = sandbox.capture(
+            ctx.task_dir, models.sandbox_policy(ctx.repo_root)
+        )
+    except (models.ConfigError, sandbox.ConfigError, OSError) as exc:
+        raise Refusal(f"sandbox configuration: {exc}") from exc
+    chain = [name, *profile["fallback"]]
+    if ctx.sandbox.enabled and any(
+        ctx.profiles[n]["driver"] != "cli" for n in chain if n in ctx.profiles
+    ):
+        try:
+            ctx.engine = sandbox.engine_for(ctx.sandbox)
+        except sandbox.SandboxError as exc:
+            raise Refusal(f"sandbox: {exc}") from exc
     ctx.extras = load_extras(ctx.repo_root, profile)
     ctx.heartbeat = args.heartbeat
     ctx.verbose = args.verbose
@@ -775,6 +822,19 @@ def conventions(profile: str) -> str | None:
     return (rest[: nxt.start()] if nxt else rest).strip()
 
 
+def sandbox_adapter(policy: sandbox.Policy) -> str:
+    """The command-boundary section for an enabled sandbox, else ""."""
+    if not policy.enabled:
+        return ""
+    return SANDBOX_ADAPTER.format(
+        backend=policy.backend,
+        image=policy.image,
+        dependencies=" and the provisioned uv.lock environment"
+        if policy.provision
+        else "",
+    )
+
+
 def build_system(plan_text: str, extras: list, adapter: str = ADAPTER) -> str:
     parts = [implementer_body()]
     for name in plan_profiles(plan_text):
@@ -834,8 +894,12 @@ class Tools:
         heartbeat: float = 0.0,
         on_command=None,
         post_edit=(),
+        sandbox_policy: sandbox.Policy = sandbox.DISABLED,
+        engine: sandbox.Engine | None = None,
     ):
         self.root = worktree.resolve()
+        self.sandbox = sandbox_policy
+        self.engine = engine
         self.command_timeout = command_timeout
         self.touched = touched
         self.heartbeat = heartbeat
@@ -1066,6 +1130,8 @@ class Tools:
         reason = check_command(command, "external-implementer")
         if reason is not None:
             raise ToolError(f"denied: {reason}")
+        if self.sandbox.enabled:
+            return self._execute_sandboxed(command)
         env = child_env()
         try:
             if os.name == "nt":
@@ -1128,6 +1194,46 @@ class Tools:
             else f"exit code: {proc.returncode}"
         )
         return head, text, timed_out
+
+    def _execute_sandboxed(self, command: str) -> tuple[str, str, bool]:
+        """_execute inside the sandbox: never on the host, git and host programs denied.
+
+        A sandbox failure (engine, image, provisioning, a program the image lacks)
+        raises ToolError; the duration of a started container still counts.
+        """
+        try:
+            argv = shlex.split(command)
+        except ValueError as exc:
+            raise ToolError(f"error: cannot parse command: {exc}") from None
+        if not argv:
+            raise ToolError("error: command is empty")
+        problem = sandbox.program_problem(argv[0])
+        if problem is not None:
+            raise ToolError(f"denied: {problem}")
+        forwarded = sandbox.workload_env(child_env(), self.sandbox)
+        with Heartbeat(self.heartbeat, f"running {one_line(command, 60)} (sandbox)"):
+            try:
+                result = sandbox.run(
+                    self.sandbox,
+                    argv,
+                    self.root,
+                    timeout=self.command_timeout,
+                    forwarded=forwarded,
+                    engine=self.engine,
+                )
+            except sandbox.SandboxError as exc:
+                raise ToolError(f"error: sandbox: {exc}") from None
+        self.last_command = result.duration
+        if self.on_command is not None:
+            self.on_command(self.turn, command, self.last_command, result.timed_out)
+        if result.error is not None:
+            raise ToolError(f"error: sandbox: {result.error}")
+        head = (
+            f"timed out after {self.command_timeout:g} s and was killed"
+            if result.timed_out
+            else f"exit code: {result.exit_code}"
+        )
+        return head, result.output, result.timed_out
 
     def execute(self, name: str, args) -> tuple[str, str | None]:
         """Run a tool; returns (result text, blocked reason or None)."""
@@ -1286,7 +1392,9 @@ class Session:
         self.round_started = started
         self.start = ctx.profiles[ctx.profile_name]
         plan = ctx.files[ctx.task_dir / "plan.md"]
-        self.system = build_system(plan, ctx.extras)
+        self.system = build_system(
+            plan, ctx.extras, adapter=ADAPTER + sandbox_adapter(ctx.sandbox)
+        )
         self.system_cli = build_system(plan, ctx.extras, adapter=CLI_ADAPTER)
         self.user = build_user(ctx)
         # per-profile usage: {"input","cached","cache_write","output","reasoning"} or
@@ -1529,6 +1637,8 @@ class Session:
             heartbeat=self.ctx.heartbeat,
             on_command=self.record_command,
             post_edit=profile["post_edit"],
+            sandbox_policy=self.ctx.sandbox,
+            engine=self.ctx.engine,
         )
         user = self.user
         if interrupted:
@@ -1675,7 +1785,13 @@ class Session:
         unless the final message starts with BLOCKED:.
         """
         self.cli_used = True
+        if self.ctx.sandbox.enabled:
+            log(
+                f"sandbox: not applied to driver cli profile {name}; the CLI keeps its "
+                "own sandbox flags and the runner's environment contract"
+            )
         user = self.user
+
         if interrupted:
             user += (
                 f"\n\nNote: a previous attempt on profile {interrupted[0]} was interrupted "

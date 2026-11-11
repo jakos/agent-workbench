@@ -29,11 +29,24 @@ runs through `launch.cmd_command_line` (a cmd metacharacter -> ERROR `refused:`)
 otherwise run it. Exit 0 -> PASS, non-zero -> FAIL, timeout -> ERROR (Exit `-`),
 OSError at start -> ERROR `cannot start:`.
 
-Running: the environment is inherited unchanged, stdin is DEVNULL, stdout and stderr go
-to one temporary file (not a pipe, so a surviving grandchild cannot block the read).
+Running: without a sandbox the environment is inherited unchanged, stdin is DEVNULL,
+stdout and stderr go to one temporary file (not a pipe, so a surviving grandchild cannot
+block the read).
 POSIX starts a new session and kills the process group on timeout; Windows runs
 taskkill /F /T and then kills the process, waiting at most 10 s more. Output is decoded
 as UTF-8 with replacement, CRLF normalized, ANSI escapes stripped.
+
+Sandbox (opt-in, `[sandbox]` in the project's models.toml, see scripts/sandbox.py): the
+policy is captured into the task folder on first use (sandbox.capture), then every
+command runs in a Podman or Docker container instead: the same rules and splitting, but
+the program is resolved inside the image (a host executable or git is ERROR `refused:`,
+a program the image lacks is ERROR `sandbox:`), and the environment is filtered: only the
+implementer allowlist's portable values (implement.child_env) plus the sandbox's
+pass_env reach the workload — provider keys, proxies and runtime connection variables
+never do. A sandbox failure (no engine, missing image, unprovisioned dependencies, an
+engine error) is ERROR `sandbox: <reason>`; nothing is ever run on the host instead. The
+context line then also names the sandbox. Without the table (or with backend = "none")
+nothing changes.
 
 Timeout per command: `--timeout-seconds`, else `[gates] command_timeout_seconds` from
 models.toml, else 600.
@@ -76,6 +89,7 @@ import autopilot
 import launch
 import models
 import rules
+import sandbox
 
 CHECKER_ROLE = "checker"
 EXCERPT_LIMIT = 30
@@ -225,15 +239,24 @@ def fence_block(lines: list[str]) -> str:
     return f"{delimiter}\n{body}\n{delimiter}"
 
 
-def render(round_n: int, run_dir: Path, timeout: float, results: list[dict]) -> str:
+def render(
+    round_n: int,
+    run_dir: Path,
+    timeout: float,
+    results: list[dict],
+    policy: sandbox.Policy = sandbox.DISABLED,
+) -> str:
     """The checks-<n>.md content (D6): heading, context line, table, failures, not run."""
+    context = (
+        f"Run by scripts/gates.py from {code_span(str(run_dir))}, plan order, "
+        f"no model. Timeout {timeout:g} s per command."
+    )
+    if policy.enabled:
+        context += f" Sandbox: {policy.describe()}."
     lines = [
         f"# Checks: round {round_n}",
         "",
-        (
-            f"Run by scripts/gates.py from {code_span(str(run_dir))}, plan order, "
-            f"no model. Timeout {timeout:g} s per command."
-        ),
+        context,
         "",
         "| # | Command | Result | Exit | Duration |",
         "| --- | --- | --- | --- | --- |",
@@ -296,8 +319,59 @@ def kill_tree(proc: subprocess.Popen, env: dict) -> None:
                 pass
 
 
-def run_line(number: int, line: str, run_dir: Path, env: dict, timeout: float) -> dict:
-    """Decide and run one plan command line; the result record for render()."""
+def run_sandboxed(
+    result: dict,
+    args: list[str],
+    run_dir: Path,
+    env: dict,
+    timeout: float,
+    policy: sandbox.Policy,
+    engine: sandbox.Engine | None,
+) -> dict:
+    """Run one split command in the sandbox; every sandbox failure is ERROR."""
+    problem = sandbox.program_problem(args[0])
+    if problem is not None:
+        result["detail"] = [f"refused: {problem}"]
+        return result
+    try:
+        done = sandbox.run(
+            policy, args, run_dir, timeout=timeout, forwarded=env, engine=engine
+        )
+    except sandbox.SandboxError as exc:
+        result["detail"] = [f"sandbox: {exc}"]
+        return result
+    result["duration"] = done.duration
+    output = clean_output(done.output)
+    if done.timed_out:
+        result["detail"] = excerpt(output, True, timeout)
+        return result
+    if done.error is not None:
+        result["detail"] = [f"sandbox: {done.error}"]
+        return result
+    result["exit"] = done.exit_code
+    if done.exit_code == 0:
+        result["status"] = "PASS"
+    else:
+        result["status"] = "FAIL"
+        result["detail"] = excerpt(output, False, timeout)
+    return result
+
+
+def run_line(
+    number: int,
+    line: str,
+    run_dir: Path,
+    env: dict,
+    timeout: float,
+    policy: sandbox.Policy = sandbox.DISABLED,
+    engine: sandbox.Engine | None = None,
+) -> dict:
+    """Decide and run one plan command line; the result record for render().
+
+    With an enabled policy `env` is the forwarded workload environment and the command
+    runs through run_sandboxed (never on the host); otherwise it is the inherited host
+    environment.
+    """
     result = {
         "number": number,
         "command": line,
@@ -316,6 +390,8 @@ def run_line(number: int, line: str, run_dir: Path, env: dict, timeout: float) -
     except ValueError as exc:
         result["detail"] = [f"refused: {exc}"]
         return result
+    if policy.enabled:
+        return run_sandboxed(result, args, run_dir, env, timeout, policy, engine)
     found = find_program(args[0], run_dir, env)
     if found is None:
         result["status"] = "NOTRUN"
@@ -410,7 +486,20 @@ def run(args: argparse.Namespace) -> int:
         raise Refusal(
             f"plan.md has no Verification commands block, or it is empty: {plan_path}"
         )
+    try:
+        policy = sandbox.capture(task_dir, models.sandbox_policy(repo_root))
+    except (models.ConfigError, sandbox.ConfigError, OSError) as exc:
+        raise Refusal(f"sandbox configuration: {exc}") from exc
     env = os.environ
+    engine = None
+    if policy.enabled:
+        import implement
+
+        env = sandbox.workload_env(implement.child_env(), policy)
+        try:
+            engine = sandbox.engine_for(policy)
+        except sandbox.SandboxError:
+            engine = None  # each command then reports the failure as ERROR sandbox:
     import phase_gate
 
     try:
@@ -420,12 +509,14 @@ def run(args: argparse.Namespace) -> int:
     except (phase_gate.Refusal, phase_gate.policy.ConfigError) as exc:
         raise Refusal(str(exc)) from exc
     results = [
-        run_line(number, line, run_dir, env, timeout)
+        run_line(number, line, run_dir, env, timeout, policy, engine)
         for number, line in enumerate(commands, 1)
     ]
     out_path = task_dir / f"checks-{args.round}.md"
     out_path.write_text(
-        render(args.round, run_dir, timeout, results), encoding="utf-8", newline="\n"
+        render(args.round, run_dir, timeout, results, policy),
+        encoding="utf-8",
+        newline="\n",
     )
     counts = {"PASS": 0, "FAIL": 0, "ERROR": 0, "NOTRUN": 0}
     for result in results:

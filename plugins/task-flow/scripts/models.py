@@ -18,6 +18,12 @@ not pass silently. With neither file present there are no profiles and no roles.
   command_timeout_seconds     number > 0, per verification command run by
                               scripts/gates.py (default 600)
 
+[sandbox] keys (project file only; a [sandbox] table in the user file is an error):
+backend, image, memory, pids_limit, tmp_size, pass_env and provision, validated by
+scripts/sandbox.py (see its docstring). A pass_env name that is also a profile's
+api_key_env is refused. sandbox_policy() returns the validated policy; missing or
+backend = "none" is the disabled policy.
+
 [profiles.<name>] keys (required: driver, model, billing; base_url on the API
 drivers, api_key_env unless billing = "local" on the API drivers and unless
 billing = "subscription" on driver "cli"):
@@ -145,6 +151,8 @@ import re
 import sys
 import tomllib
 from pathlib import Path
+
+import sandbox
 
 DRIVERS = {"openai-loop", "anthropic-loop", "cli"}
 BILLINGS = {"subscription", "api", "local"}
@@ -413,7 +421,7 @@ def _read(path: Path) -> dict:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{path}: invalid TOML: {exc}") from exc
-    unknown = sorted(set(data) - {"profiles", "roles", "gates"})
+    unknown = sorted(set(data) - {"profiles", "roles", "gates", "sandbox"})
     if unknown:
         raise ConfigError(f"{path}: unknown top-level key(s) {unknown}")
     return data
@@ -570,11 +578,14 @@ def load(
     raw_profiles: dict[str, dict] = {}
     raw_roles: dict[str, str | dict] = {}
     origin: dict[tuple, Path] = {}
+    policy = sandbox.DISABLED
     for path in sources:
         data = _read(path)
         profiles = _validate_profiles(path, data.get("profiles", {}))
         roles = _validate_roles(path, data.get("roles", {}))
         _validate_gates(path, data.get("gates", {}))
+        if "sandbox" in data:
+            policy = _validate_sandbox(path, data["sandbox"], path == sources[0])
         for name, table in profiles.items():
             raw_profiles.setdefault(name, {}).update(table)
             for key in table:
@@ -672,6 +683,14 @@ def load(
                     f"{path}: profiles.{name}.fallback: unknown profile {target!r}"
                 )
 
+    keys = {p["api_key_env"] for p in resolved.values() if p["api_key_env"]}
+    for name in policy.pass_env:
+        if name in keys:
+            raise ConfigError(
+                f"{policy.source}: sandbox.pass_env: {name} is a profile's api_key_env; "
+                "model credentials never enter the sandbox"
+            )
+
     rules = raw_roles.get("implementer")
     if isinstance(rules, dict):
         validate_rules(rules, resolved, origin)
@@ -697,6 +716,52 @@ def load(
         if value not in resolved:
             raise ConfigError(f"{path}: roles.{role}: unknown profile {value!r}")
     return (resolved, raw_roles, rules) if with_rules else (resolved, raw_roles)
+
+
+def _validate_sandbox(path: Path, table: object, user_scope: bool) -> sandbox.Policy:
+    """Validate one file's [sandbox] table; the user file may not set it."""
+    if user_scope:
+        raise ConfigError(
+            f"{path}: sandbox: [sandbox] is repository-only; put it in "
+            "<repo-root>/.claude/task-flow.models.toml"
+        )
+    try:
+        return sandbox.parse(table, str(path))
+    except sandbox.ConfigError as exc:
+        raise ConfigError(str(exc)) from exc
+
+
+def sandbox_policy(project_root: Path) -> sandbox.Policy:
+    """The repository's validated [sandbox] policy (disabled when absent or "none").
+
+    Reads only what the sandbox needs, so a configuration without [sandbox] behaves
+    exactly as before: a [sandbox] table in the user file is an error, the project
+    file's table is validated, and a pass_env name that a profile (in either file)
+    uses as api_key_env is refused.
+    """
+    user, project = user_file(), project_file(project_root)
+    user_data, project_data = _read(user), _read(project)
+    if "sandbox" in user_data:
+        _validate_sandbox(user, user_data["sandbox"], True)
+    if "sandbox" not in project_data:
+        return sandbox.DISABLED
+    policy = _validate_sandbox(project, project_data["sandbox"], False)
+    keys = set()
+    for data in (user_data, project_data):
+        profiles = data.get("profiles", {})
+        if isinstance(profiles, dict):
+            for table in profiles.values():
+                if isinstance(table, dict) and isinstance(
+                    table.get("api_key_env"), str
+                ):
+                    keys.add(table["api_key_env"])
+    for name in policy.pass_env:
+        if name in keys:
+            raise ConfigError(
+                f"{project}: sandbox.pass_env: {name} is a profile's api_key_env; "
+                "model credentials never enter the sandbox"
+            )
+    return policy
 
 
 def merge_rule(target: dict, source: dict) -> None:

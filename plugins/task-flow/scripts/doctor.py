@@ -6,10 +6,13 @@
 
 CLI:
   uv run --script plugins/task-flow/scripts/doctor.py [--project <dir>] [--online]
+      [--sandbox-probe]
 
   --project  the repository to check (default: the current directory)
   --online   additionally send one authenticated GET <base_url>/models per profile in use
              (the provider's model list; it costs no tokens)
+  --sandbox-probe  additionally run scripts/sandbox.py's disposable isolation probe in
+             the configured container engine (temporary fixture, local image, no pull)
 
 Output, UTF-8 on stdout:
 
@@ -111,6 +114,18 @@ Local checks, in fixed order (each is a plain function; every input is an argume
                           - driver: DRIVER_CHECKS has one entry per driver doctor knows;
                             a profile whose driver has no entry -> WARN.
 
+After the hook check come the sandbox rows (scripts/sandbox.py `status`, check_sandbox):
+`sandbox` PASS "disabled" without a [sandbox] table or with backend = "none"; FAIL with
+the message for an invalid or unsupported configuration (e.g. backend = "srt"); when
+enabled, `sandbox runtime` (engine on PATH and reachable; the detail says rootless or
+rootful — a rootful Podman machine is never reported as rootless), `sandbox image`
+(present locally; FAIL with the pull command to run yourself otherwise) and, with
+provision = true, `sandbox dependencies` (WARN when not provisioned). These run only
+local engine queries: no pull, no provisioning, no network, no model. With
+--sandbox-probe, one `sandbox probe: <aspect>` row per isolation property of
+sandbox.probe (non-root user, host-readable worktree write, read-only root and .git, no
+outside file, no host secret variable, no TCP connection) follows.
+
 Between the check table and `## Fixes` the report has a `## Stages` table — one row per
 stage (planner, implementer, checker, reviewer, backlog) with its method, model and
 billing: a Claude entry shows `claude` plus the agent frontmatter's default model (or
@@ -159,6 +174,7 @@ from urllib.parse import urlsplit
 
 import models
 import policy
+import sandbox
 
 
 def check_hooks(plugin_root: Path) -> Check:
@@ -1329,6 +1345,85 @@ def check_online(name: str, profile: dict, env: dict, http_timeout: float) -> Ch
 # --- redaction and rendering --------------------------------------------------------------
 
 
+SANDBOX_FIXES = {
+    "sandbox": (
+        "fix: correct [sandbox] in .claude/task-flow.models.toml (backend none, podman "
+        "or docker; a digest-pinned image) or remove it"
+    ),
+    "sandbox runtime": (
+        "fix: install and start the engine named by [sandbox] backend (podman machine "
+        'start, or start Docker), or set backend = "none"'
+    ),
+    "sandbox image": "fix: pull the pinned image yourself; task-flow never pulls",
+    "sandbox dependencies": (
+        "fix: uv run --script plugins/task-flow/scripts/sandbox.py provision "
+        "--project <worktree>"
+    ),
+}
+
+
+def check_sandbox(
+    project_root: Path,
+    probe: bool = False,
+    status=None,
+    run_probe=None,
+) -> list[Check]:
+    """The sandbox rows: configuration, runtime, image, dependencies, optional probe.
+
+    Default diagnostics only query the local engine (no pull, no provisioning, no
+    network, no model); the probe runs only when asked for.
+    """
+    status = status or sandbox.status
+    run_probe = run_probe or sandbox.probe
+    try:
+        configured = models.sandbox_policy(project_root)
+    except models.ConfigError as exc:
+        return [
+            Check(
+                "sandbox",
+                "FAIL",
+                f"unsupported or invalid: {exc}",
+                [SANDBOX_FIXES["sandbox"]],
+            )
+        ]
+    rows = []
+    for name, result, detail in status(configured, project_root):
+        fixes = (
+            []
+            if result == "PASS"
+            else [SANDBOX_FIXES.get(name, SANDBOX_FIXES["sandbox"])]
+        )
+        rows.append(Check(name, result, detail, fixes))
+    if not probe:
+        return rows
+    if not configured.enabled:
+        rows.append(Check("sandbox probe", "PASS", "skipped: the sandbox is disabled"))
+    elif any(row.result == "FAIL" for row in rows):
+        rows.append(
+            Check(
+                "sandbox probe",
+                "FAIL",
+                "not run: fix the sandbox rows above first",
+                ["fix: see the failing sandbox rows"],
+            )
+        )
+    else:
+        try:
+            results = run_probe(configured)
+        except sandbox.SandboxError as exc:
+            results = [("container", False, str(exc))]
+        for aspect, ok, detail in results:
+            rows.append(
+                Check(
+                    f"sandbox probe: {aspect}",
+                    "PASS" if ok else "FAIL",
+                    detail or ("holds" if ok else "violated"),
+                    [] if ok else ["fix: do not rely on the sandbox until this holds"],
+                )
+            )
+    return rows
+
+
 def secret_values(env: dict, extra_names: list) -> list[str]:
     """The values that must never be printed: key-looking variables and api_key_env names."""
     names = {"ANTHROPIC_API_KEY"}
@@ -1409,6 +1504,11 @@ def main(argv: list[str] | None = None) -> int:
         help="invoke only the handler on temporary fixtures, without models",
     )
     parser.add_argument(
+        "--sandbox-probe",
+        action="store_true",
+        help="also run the disposable sandbox isolation probe (local image, no pull)",
+    )
+    parser.add_argument(
         "--hook-fixture",
         action="store_true",
         help="retain a temporary fixture for the named manual hook-firing check",
@@ -1472,6 +1572,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 checks.append(check_online(profile_name, profile, env, timeout))
     checks.append(check_hooks(plugin_root))
+    checks += check_sandbox(project, probe=args.sandbox_probe)
     secrets = secret_values(
         env, [profile.get("api_key_env") for profile in (profiles or {}).values()]
     )

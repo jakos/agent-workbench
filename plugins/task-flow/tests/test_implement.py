@@ -2585,6 +2585,191 @@ class InfrastructureClassificationTest(unittest.TestCase):
                 self.assertEqual(request.call_count, 2)
 
 
+SANDBOX_IMAGE = "example.invalid/uv:py3.14@sha256:" + "b" * 64
+SANDBOX_TOML = (
+    f'\n[sandbox]\nbackend = "podman"\nimage = "{SANDBOX_IMAGE}"\n'
+    'pass_env = ["SANDBOX_VISIBLE"]\n'
+)
+ENV_PROBE = (
+    "import json, os; print('ENV ' + json.dumps("
+    "{k: os.environ.get(k) for k in ('FAKE_KEY', 'SANDBOX_VISIBLE', 'HOME')}))"
+)
+
+
+@unittest.skipUnless(shutil.which("git"), "git is not installed")
+class SandboxRoutingTest(RoundFixture):
+    """AC4: with [sandbox], run_command and post_edit run in the container; the model
+    calls, git bookkeeping and file tools stay on the host (fake engine, no daemon)."""
+
+    def run_in_process(self, extra_env=None, engine=None):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+
+        import sandbox
+        from test_sandbox import FakeEngine
+
+        fake = FakeEngine(Path(self._tmp.name) / "fake")
+        env = self.round_env({"SANDBOX_VISIBLE": "visible", **(extra_env or {})})
+        out, err = io.StringIO(), io.StringIO()
+        factory = engine or (lambda _policy: fake.engine)
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.object(sandbox, "engine_for", side_effect=factory),
+            redirect_stdout(out),
+            redirect_stderr(err),
+        ):
+            code = implement.main(self.round_cmd(extra=["--heartbeat", "0"])[2:])
+        return code, out.getvalue(), err.getvalue(), fake
+
+    def test_commands_run_in_the_sandbox_and_git_stays_on_the_host(self):
+        server = self.server(
+            [
+                reply(
+                    tool_call(
+                        "write_file", {"path": "src/new.py", "content": "x = 1\n"}, "c1"
+                    ),
+                    tool_call(
+                        "run_command", {"command": f'python -c "{ENV_PROBE}"'}, "c2"
+                    ),
+                    tool_call("run_command", {"command": "git status"}, "c3"),
+                    tool_call("run_command", {"command": r"C:\tools\x.exe"}, "c4"),
+                ),
+                reply(content="done"),
+            ]
+        )
+        self.configure(
+            self.profile(
+                "fake", server, post_edit=["python -c \"print('checked')\" {path}"]
+            )
+            + SANDBOX_TOML
+        )
+        code, out, err, fake = self.run_in_process()
+        self.assertEqual(code, 0, out + err)
+        results = server.tool_results(1)
+        self.assertIn("post_edit:", results[0])
+        self.assertIn("checked", results[0])
+        probe = json.loads(results[1].split("ENV ", 1)[1].splitlines()[0])
+        self.assertIsNone(
+            probe["FAKE_KEY"], "the provider key never enters the sandbox"
+        )
+        self.assertEqual(probe["SANDBOX_VISIBLE"], "visible")
+        self.assertEqual(probe["HOME"], "/tmp")
+        self.assertIn("denied: git runs on the host only", results[2])
+        self.assertIn("host executable", results[3])
+        containers = fake.containers()
+        self.assertEqual(len(containers), 2, "post_edit + run_command, nothing else")
+        for container in containers:
+            self.assertEqual(Path(container["mounts"]["/work"]), self.worktree)
+        self.assertEqual(containers[0]["argv"][:2], ["python", "-c"])
+        self.assertEqual(containers[0]["argv"][-1], "src/new.py")
+        for run in fake.run_calls():
+            self.assertEqual(run[run.index("--network") + 1], "none")
+        # model calls went to the host-side server, staging ran on the host
+        self.assertEqual(len(server.requests), 2)
+        self.assertIn("A\tsrc/new.py", self.staged())
+        self.assertTrue((self.task / "sandbox-policy.json").is_file())
+        system = server.requests[0]["body"]["messages"][0]["content"]
+        self.assertIn("### Command sandbox", system)
+        self.assertIn(SANDBOX_IMAGE, system)
+
+    def test_missing_engine_refuses_before_any_model_call(self):
+        import sandbox
+
+        server = self.simple()
+        self.configure(self.profile("fake", server) + SANDBOX_TOML)
+
+        def missing(_policy):
+            raise sandbox.SandboxError("podman not found on PATH")
+
+        code, out, _err, _fake = self.run_in_process(engine=missing)
+        self.assertEqual(code, 2)
+        self.assertIn("refused: sandbox: podman not found", out)
+        self.assertEqual(server.requests, [])
+
+    def test_sandbox_failure_is_a_tool_error_never_a_host_run(self):
+        server = self.server(
+            [
+                reply(
+                    tool_call(
+                        "run_command",
+                        {"command": "python -c \"open('host-ran.txt', 'w')\""},
+                    )
+                ),
+                reply(content="done"),
+            ]
+        )
+        self.configure(self.profile("fake", server) + SANDBOX_TOML)
+        from test_sandbox import FakeEngine
+
+        broken = FakeEngine(Path(self._tmp.name) / "broken", run_exit=125)
+        code, out, err, _fake = self.run_in_process(engine=lambda _p: broken.engine)
+        self.assertEqual(code, 0, out + err)
+        result = server.tool_results(1)[0]
+        self.assertIn("error: sandbox:", result)
+        self.assertFalse((self.worktree / "host-ran.txt").exists())
+        self.assertEqual(len(broken.run_calls()), 1, "no retry, no host fallback")
+
+    def test_captured_policy_survives_configuration_edits(self):
+        server = self.server(
+            [
+                reply(tool_call("run_command", {"command": 'python -c "print(1)"'})),
+                reply(content="done"),
+            ]
+        )
+        self.configure(self.profile("fake", server) + SANDBOX_TOML)
+        code, out, err, _fake = self.run_in_process()
+        self.assertEqual(code, 0, out + err)
+        # the configuration now says "none" (e.g. edited by a model in worktree=none);
+        # round 2 still runs its commands in the sandbox
+        self.write_task("review-1.md", REVIEW1)
+        server2 = self.server(
+            [
+                reply(tool_call("run_command", {"command": 'python -c "print(2)"'})),
+                reply(content="done"),
+            ]
+        )
+        self.configure(
+            self.profile("fake", server2) + '\n[sandbox]\nbackend = "none"\n'
+        )
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+
+        import sandbox
+        from test_sandbox import FakeEngine
+
+        fake = FakeEngine(Path(self._tmp.name) / "second")
+        with (
+            patch.dict(os.environ, self.round_env(), clear=True),
+            patch.object(sandbox, "engine_for", return_value=fake.engine),
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(io.StringIO()),
+        ):
+            code = implement.main(
+                self.round_cmd(round_no=2, extra=["--heartbeat", "0"])[2:]
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(len(fake.containers()), 1)
+
+    def test_no_sandbox_configuration_keeps_host_execution(self):
+        server = self.server(
+            [
+                reply(tool_call("run_command", {"command": python_command(ENV_PROBE)})),
+                reply(content="done"),
+            ]
+        )
+        self.configure(self.profile("fake", server, api_key_env="FAKE_KEY"))
+        done = self.run_round(env={"SANDBOX_VISIBLE": "visible"})
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        probe = json.loads(
+            server.tool_results(1)[0].split("ENV ", 1)[1].splitlines()[0]
+        )
+        self.assertIsNone(probe["SANDBOX_VISIBLE"], "unchanged host allowlist")
+        self.assertNotEqual(probe["HOME"], "/tmp")
+        self.assertFalse((self.task / "sandbox-policy.json").exists())
+        system = server.requests[0]["body"]["messages"][0]["content"]
+        self.assertNotIn("Command sandbox", system)
+
+
 from test_phase_gate import GateFixture
 
 
