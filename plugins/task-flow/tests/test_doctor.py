@@ -227,7 +227,8 @@ class ScriptTest(DoctorTest):
         for module in imported:
             self.assertTrue(
                 module in sys.stdlib_module_names
-                or module in {"models", "policy", "phase_gate", "__future__"},
+                or module
+                in {"models", "policy", "phase_gate", "sandbox", "__future__"},
                 f"non-stdlib import: {module}",
             )
 
@@ -1091,6 +1092,110 @@ class WorkflowHookEvidenceTest(unittest.TestCase):
             )
             self.assertEqual(doctor.check_hooks(root).result, "FAIL")
         self.assertEqual(doctor.check_hooks(SCRIPTS.parent).result, "PASS")
+
+
+class SandboxDiagnosticsTest(DoctorTest):
+    """AC10: disabled, healthy, missing image, unavailable runtime and unsupported
+    configurations are distinct; ordinary diagnostics never pull, provision or probe."""
+
+    IMAGE = "example.invalid/uv:py3.14@sha256:" + "f" * 64
+
+    def configure(self, backend: str = "podman") -> None:
+        self.write(
+            ".claude/task-flow.models.toml",
+            f'[sandbox]\nbackend = "{backend}"\nimage = "{self.IMAGE}"\n',
+        )
+
+    def rows(self, fake=None, probe=False, missing=False):
+        import sandbox
+        from test_sandbox import FakeEngine
+
+        fake = fake or FakeEngine(Path(tempfile.mkdtemp(dir=self._tmp.name)))
+
+        def engine_for(_policy):
+            if missing:
+                raise sandbox.SandboxError("podman not found on PATH")
+            return fake.engine
+
+        probes = []
+
+        def run_probe(policy):
+            probes.append(policy)
+            return [("non-root user", True, "uid 10001")]
+
+        with mock.patch.object(sandbox, "engine_for", side_effect=engine_for):
+            rows = doctor.check_sandbox(self.repo, probe=probe, run_probe=run_probe)
+        return rows, probes, fake
+
+    def test_disabled_is_distinct_and_passes(self) -> None:
+        rows, probes, _fake = self.rows()
+        self.assertEqual([(r.name, r.result) for r in rows], [("sandbox", "PASS")])
+        self.assertIn("disabled", rows[0].detail)
+        self.assertEqual(probes, [])
+
+    def test_unsupported_and_invalid_configuration_fail(self) -> None:
+        self.write(".claude/task-flow.models.toml", '[sandbox]\nbackend = "srt"\n')
+        rows, _probes, _fake = self.rows()
+        self.assertEqual((rows[0].name, rows[0].result), ("sandbox", "FAIL"))
+        self.assertIn("unsupported", rows[0].detail)
+        self.assertIn("not implemented yet", rows[0].detail)
+        self.assertTrue(rows[0].fixes)
+
+    def test_healthy_rootful_and_rootless(self) -> None:
+        from test_sandbox import FakeEngine
+
+        self.configure()
+        rows, probes, fake = self.rows()
+        self.assertEqual(
+            [(r.name, r.result) for r in rows],
+            [
+                ("sandbox", "PASS"),
+                ("sandbox runtime", "PASS"),
+                ("sandbox image", "PASS"),
+            ],
+        )
+        self.assertIn("rootful", rows[1].detail)
+        self.assertNotIn("rootless", rows[1].detail)
+        self.assertEqual(probes, [], "the probe runs only when asked for")
+        calls = [c["args"][0] for c in fake.calls()]
+        self.assertNotIn("pull", calls)
+        self.assertNotIn("run", calls, "no container starts without --sandbox-probe")
+        rootless = FakeEngine(Path(tempfile.mkdtemp(dir=self._tmp.name)), rootless=True)
+        rows, _probes, _fake = self.rows(fake=rootless)
+        self.assertIn("rootless", rows[1].detail)
+
+    def test_missing_image_and_unavailable_runtime_fail_distinctly(self) -> None:
+        from test_sandbox import FakeEngine
+
+        self.configure("docker")
+        no_image = FakeEngine(
+            Path(tempfile.mkdtemp(dir=self._tmp.name)),
+            backend="docker",
+            image_present=False,
+        )
+        rows, _probes, _fake = self.rows(fake=no_image)
+        self.assertEqual((rows[-1].name, rows[-1].result), ("sandbox image", "FAIL"))
+        self.assertIn("never pulls", rows[-1].detail)
+        self.assertNotIn("pull", [c["args"][0] for c in no_image.calls()])
+        rows, _probes, _fake = self.rows(missing=True)
+        self.assertEqual((rows[-1].name, rows[-1].result), ("sandbox runtime", "FAIL"))
+        self.assertIn("not found on PATH", rows[-1].detail)
+        down = FakeEngine(Path(tempfile.mkdtemp(dir=self._tmp.name)), info_rc=1)
+        rows, _probes, _fake = self.rows(fake=down)
+        self.assertEqual((rows[-1].name, rows[-1].result), ("sandbox runtime", "FAIL"))
+        for row in rows:
+            if row.result != "PASS":
+                self.assertTrue(row.fixes)
+
+    def test_probe_on_request_and_main_row(self) -> None:
+        self.configure()
+        rows, probes, _fake = self.rows(probe=True)
+        self.assertEqual(len(probes), 1)
+        self.assertEqual(rows[-1].name, "sandbox probe: non-root user")
+        self.assertEqual(rows[-1].result, "PASS")
+        self.write(".claude/task-flow.models.toml", "")
+        _code, out, _err = self.run_doctor(["--project", str(self.repo)])
+        self.assertIn("| sandbox | PASS | disabled", out)
 
 
 if __name__ == "__main__":

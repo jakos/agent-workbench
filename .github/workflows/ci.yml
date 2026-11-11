@@ -14,6 +14,8 @@
 #   uv                 0.12.21 (astral-sh/uv tag 0.12.21)
 #   Python             3.14.7  (uv-managed cpython, downloadable for linux and windows)
 #   Claude CLI         @anthropic-ai/claude-code 2.1.316 (npm), auto-updater disabled
+# A second job, sandbox, runs the command-sandbox suite against real Podman and Docker
+# on Linux with the digest-pinned uv/Python image (see the job's comment below).
 # No secrets, no model calls, no release steps; standard hosted runners are free for
 # public repositories. Windows steps use the native default shell (pwsh), not Git Bash.
 
@@ -70,3 +72,52 @@ jobs:
 
       - name: Run the shared task-flow checks
         run: uv run --script plugins/task-flow/scripts/verify.py
+
+  # The command sandbox (plugins/task-flow/scripts/sandbox.py) against real container
+  # engines. The shared checks above run test_sandbox.py with fakes only; this job runs
+  # its selected real-backend mode, which fails (never skips) when the engine or image
+  # is missing. It obtains the digest-pinned image explicitly — task-flow itself never
+  # pulls — and runs no model and uses no secret. Podman (preinstalled, rootless for the
+  # runner user) is the required backend; Docker Engine (preinstalled) runs the same
+  # suite, which is the only Docker validation this repository has. The provisioning
+  # fixture locks and installs one pinned package (network on), then runs offline.
+  sandbox:
+    name: sandbox (Podman and Docker, Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      TASK_FLOW_SANDBOX_IMAGE: "ghcr.io/astral-sh/uv:python3.14-bookworm-slim@sha256:e1869b1ddae289d6aa3c76649d0b663c11cb3215371146bf7dce95c821935fea"
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          version: "0.12.21"
+          enable-cache: true
+          cache-dependency-glob: |
+            plugins/task-flow/scripts/*.py
+            plugins/task-flow/tests/*.py
+
+      - name: Install Python 3.14
+        run: uv python install 3.14.7
+
+      - name: Show the container engines
+        run: |
+          podman version
+          docker version
+
+      - name: Obtain the pinned image (Podman)
+        run: podman pull "$TASK_FLOW_SANDBOX_IMAGE"
+
+      - name: Real isolation suite on Podman
+        run: uv run --script plugins/task-flow/tests/test_sandbox.py --backend podman --with-provisioning
+
+      - name: Obtain the pinned image (Docker)
+        run: docker pull "$TASK_FLOW_SANDBOX_IMAGE"
+
+      - name: Real isolation suite on Docker
+        run: uv run --script plugins/task-flow/tests/test_sandbox.py --backend docker --with-provisioning

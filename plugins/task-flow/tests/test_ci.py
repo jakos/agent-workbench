@@ -117,6 +117,7 @@ class RealRepoListTest(unittest.TestCase):
         self.assertEqual(len(listed), len(set(listed)), "no duplicate test entry")
         self.assertEqual(sorted(set(listed)), verify.discovered_tests(ROOT))
         self.assertIn("plugins/task-flow/tests/test_ci.py", listed)
+        self.assertEqual(listed[-1], "plugins/task-flow/tests/test_sandbox.py")
 
     def test_pinned_ruff_and_original_validator_present(self):
         checks = verify.load_checks(ROOT, None, "task-flow")
@@ -127,6 +128,55 @@ class RealRepoListTest(unittest.TestCase):
         self.assertIn(["claude", "plugin", "validate", "."], checks)
         for check in checks:
             self.assertNotIn(verify.SELF_PATH, check, "verify.py must not list itself")
+
+
+class SandboxJobTest(unittest.TestCase):
+    """AC12: CI requires the real Linux isolation suite next to the unchanged shared gate."""
+
+    IMAGE = (
+        "ghcr.io/astral-sh/uv:python3.14-bookworm-slim@sha256:"
+        "e1869b1ddae289d6aa3c76649d0b663c11cb3215371146bf7dce95c821935fea"
+    )
+
+    def setUp(self) -> None:
+        self.text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        jobs = self.text.split("\njobs:\n", 1)[1]
+        self.checks_job = jobs.split("\n  sandbox:\n", 1)[0]
+        self.assertIn("\n  sandbox:\n", jobs, "the container integration job exists")
+        self.sandbox_job = jobs.split("\n  sandbox:\n", 1)[1]
+
+    def test_shared_gate_job_is_unchanged(self) -> None:
+        self.assertIn("- ubuntu-latest", self.checks_job)
+        self.assertIn("- windows-latest", self.checks_job)
+        self.assertIn(
+            "run: uv run --script plugins/task-flow/scripts/verify.py", self.checks_job
+        )
+        self.assertNotIn("--backend", self.checks_job)
+
+    def test_sandbox_job_runs_both_real_backends_with_the_pinned_image(self) -> None:
+        job = self.sandbox_job
+        self.assertIn("runs-on: ubuntu-24.04", job)
+        self.assertIn(f'TASK_FLOW_SANDBOX_IMAGE: "{self.IMAGE}"', job)
+        self.assertIn('podman pull "$TASK_FLOW_SANDBOX_IMAGE"', job)
+        self.assertIn('docker pull "$TASK_FLOW_SANDBOX_IMAGE"', job)
+        for backend in ("podman", "docker"):
+            self.assertIn(
+                "uv run --script plugins/task-flow/tests/test_sandbox.py "
+                f"--backend {backend} --with-provisioning",
+                job,
+            )
+        self.assertNotIn("continue-on-error", job, "a backend failure fails the job")
+        self.assertNotIn("secrets.", self.text, "no secrets in CI")
+
+    def test_every_action_is_pinned_by_commit(self) -> None:
+        import re
+
+        uses = re.findall(r"uses: (\S+)", self.text)
+        self.assertTrue(uses)
+        for action in uses:
+            self.assertRegex(action, r"@[0-9a-f]{40}$", action)
 
 
 class FixtureRunTest(unittest.TestCase):

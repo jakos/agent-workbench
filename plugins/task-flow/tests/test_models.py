@@ -1382,5 +1382,64 @@ limit_patterns = ["rate limit reached"]
         self.assertEqual(quiet.stderr, "")
 
 
+class SandboxConfigTest(unittest.TestCase):
+    """[sandbox]: repository-only, validated on load, absent means unchanged (AC1, AC2)."""
+
+    setUp = ModelsTest.setUp
+    user = ModelsTest.user
+    project = ModelsTest.project
+    assertRejected = ModelsTest.assertRejected
+
+    IMAGE = "example.invalid/uv:py3.14@sha256:" + "e" * 64
+
+    def test_absent_sandbox_keeps_load_and_is_disabled(self) -> None:
+        self.project(BASE)
+        profiles, _roles = models.load(self.repo)
+        self.assertIn("mistral", profiles)
+        self.assertFalse(models.sandbox_policy(self.repo).enabled)
+
+    def test_project_sandbox_validated_on_load(self) -> None:
+        self.project(
+            BASE + f'\n[sandbox]\nbackend = "podman"\nimage = "{self.IMAGE}"\n'
+        )
+        models.load(self.repo)
+        self.assertEqual(models.sandbox_policy(self.repo).backend, "podman")
+        self.assertRejected(
+            BASE + '\n[sandbox]\nbackend = "wsl"\n', "not implemented yet"
+        )
+        self.assertRejected(
+            BASE + '\n[sandbox]\nbackend = "docker"\nimage = "uv:latest"\n',
+            "sandbox.image",
+        )
+        self.assertRejected(
+            BASE
+            + f'\n[sandbox]\nbackend = "docker"\nimage = "{self.IMAGE}"\n'
+            + 'pass_env = ["MISTRAL_API_KEY"]\n',
+            "sandbox.pass_env",
+        )
+
+    def test_user_file_may_not_set_sandbox(self) -> None:
+        path = self.user('[sandbox]\nbackend = "none"\n')
+        with self.assertRaises(models.ConfigError) as ctx:
+            models.load(self.repo)
+        self.assertIn(str(path), str(ctx.exception))
+        self.assertIn("repository-only", str(ctx.exception))
+
+    def test_template_documents_every_sandbox_key_commented(self) -> None:
+        import sandbox
+
+        text = TEMPLATE.read_text(encoding="utf-8")
+        self.assertNotIn("sandbox", tomllib.loads(text), "opt-in: commented out")
+        block = text.split("# [sandbox]\n", 1)[1]
+        lines = []
+        for line in block.splitlines():
+            if not line.startswith("# ") or " = " not in line:
+                break
+            lines.append(line[2:].split("  #", 1)[0])
+        example = tomllib.loads("\n".join(lines))
+        self.assertEqual(set(example), set(sandbox.KEYS))
+        self.assertTrue(sandbox.parse(example, "template").enabled)
+
+
 if __name__ == "__main__":
     unittest.main()

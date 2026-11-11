@@ -2916,5 +2916,104 @@ class RecoveryProtocolTest(BenchFixture):
         self.assertEqual(bench.quantile([1, 2, 3, 4], 0.25), 1.75)
 
 
+SANDBOX_IMAGE = "example.invalid/uv:py3.14@sha256:" + "d" * 64
+
+
+class SandboxPolicyPropagationTest(BenchFixture):
+    """AC6 (and AC1 for benchmarks): the originating [sandbox] policy reaches every
+    scratch copy as data; a model-written configuration cannot change it."""
+
+    def runner(self, enabled: bool = True):
+        if enabled:
+            with open(self.models_path, "a", encoding="utf-8", newline="") as handle:
+                handle.write(
+                    f'[sandbox]\nbackend = "docker"\nimage = "{SANDBOX_IMAGE}"\n'
+                    'memory = "768m"\n'
+                )
+        server = self.server([])
+        self.add_profile("fake", server)
+        runner = object.__new__(bench.Runner)
+        runner.run_id = "r1"
+        runner.project = self.project
+        runner.profiles, _roles = bench.models.load(self.project)
+        runner.sandbox = bench.models.sandbox_policy(self.project)
+        return runner
+
+    def effective(self, task: Path):
+        """The policy gates.py/implement.py would use for this task folder."""
+        return bench.sandbox.capture(
+            task, bench.models.sandbox_policy(task.parent.parent)
+        )
+
+    def test_generated_models_and_seeded_task_carry_the_policy(self) -> None:
+        runner = self.runner()
+        run_dir = self.root / "cell"
+        runner.write_models(run_dir, "fake", None)
+        self.assertEqual(
+            bench.models.sandbox_policy(run_dir).table(), runner.sandbox.table()
+        )
+        case = bench.load_case(self.make_case())
+        task, _hidden = runner.seed_task(run_dir, case, "base")
+        self.assertTrue((task / bench.sandbox.CAPTURE_NAME).is_file())
+        # a later scratch configuration saying "none" does not change the task's policy
+        (run_dir / ".claude" / "task-flow.models.toml").write_text(
+            '[sandbox]\nbackend = "none"\n', encoding="utf-8"
+        )
+        effective = self.effective(task)
+        self.assertEqual((effective.backend, effective.memory), ("docker", "768m"))
+
+    def test_hidden_checks_keep_the_originating_policy(self) -> None:
+        runner = self.runner()
+        case_dir = self.make_case()
+        case = bench.load_case(case_dir)
+        case.update(
+            base_commit=self.base_sha,
+            result_commit=self.result_sha,
+            hidden_files=["hidden_check.py"],
+        )
+        code = self.root / "cell" / "code"
+        bench.export_base(self.src, self.base_sha, code)
+        # model-written configuration inside the implementer's worktree
+        write_file(
+            code / ".claude" / "task-flow.models.toml", '[sandbox]\nbackend = "none"\n'
+        )
+        seen = []
+
+        def gates(task: Path, probe: Path, round_n: int):
+            seen.append(self.effective(task))
+            self.assertTrue((probe / "hidden_check.py").is_file())
+            write_text_checks = task / "checks-1.md"
+            write_text_checks.write_text(
+                "# Checks: round 1\n\n| # | Command | Result | Exit | Duration |\n"
+                "| --- | --- | --- | --- | --- |\n| 1 | `x` | PASS | 0 | <1s |\n",
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess([], 0, "", "")
+
+        with patch.object(runner, "gates", side_effect=gates):
+            self.assertEqual(runner.run_hidden(case, code, None, True), "pass")
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0].backend, "docker")
+        self.assertEqual(seen[0].image, SANDBOX_IMAGE)
+        self.assertFalse(
+            (code / "hidden_check.py").exists(),
+            "hidden files never enter the implementer worktree (its container mount)",
+        )
+
+    def test_without_sandbox_nothing_is_written(self) -> None:
+        runner = self.runner(enabled=False)
+        self.assertFalse(runner.sandbox.enabled)
+        run_dir = self.root / "cell"
+        runner.write_models(run_dir, "fake", None)
+        text = (run_dir / ".claude" / "task-flow.models.toml").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("[sandbox]", text)
+        task, _hidden = runner.seed_task(
+            run_dir, bench.load_case(self.make_case()), "b"
+        )
+        self.assertFalse((task / bench.sandbox.CAPTURE_NAME).exists())
+
+
 if __name__ == "__main__":
     unittest.main()

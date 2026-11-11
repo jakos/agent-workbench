@@ -50,6 +50,7 @@ claude plugin validate .
 uv run --script plugins/task-flow/tests/test_phase_gate.py
 uv run --script plugins/task-flow/tests/test_publish_task.py
 uv run --script plugins/task-flow/tests/test_pr_review.py
+uv run --script plugins/task-flow/tests/test_sandbox.py
 ```
 
 ## Architecture rules
