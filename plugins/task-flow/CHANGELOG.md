@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.16.0 - 2026-11-15
+
+### Features
+
+- feat(task-flow): warn instead of refusing a release while tasks are in flight (018f42e)
+
+- feat(task-flow): allow a reasoning-effort override in a read-only command (4389d3a)
+
+- feat(task-flow): run model-influenced commands in an opt-in container sandbox (b03eaa3)
+
+- feat(task-flow): keep a start-gate approval valid across a controlled stacked base change (72197e3)
+
+### Other
+
+- test(task-flow): drop the setup-page permissions test and tidy formatting (342960c)
+
+- test(task-flow): compare resolved paths in the rebase git-call test (c918ea7)
+
 ## 0.15.0 - 2026-11-09
 
 ### Features
