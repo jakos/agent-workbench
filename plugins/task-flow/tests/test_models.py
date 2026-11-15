@@ -1209,6 +1209,18 @@ limit_patterns = ["rate limit reached"]
             )
         )
 
+    def test_read_only_command_allows_reasoning_effort_override(self):
+        for override in (
+            ["-c", "model_reasoning_effort=high"],
+            ["-c", 'model_reasoning_effort="low"'],
+            ["--config", "model_reasoning_effort=medium"],
+            ["--config=model_reasoning_effort=high"],
+        ):
+            with self.subTest(override=override):
+                command = ["codex", "exec", "--sandbox", "read-only", *override]
+                command += ["-o", "{last_message_file}", "-"]
+                self.assertIsNone(models.verify_read_only_command(command))
+
     def test_read_only_command_rejects_unsafe_or_unverified_forms(self):
         base = self.cli_profile()
         cases = {
@@ -1224,6 +1236,12 @@ limit_patterns = ["rate limit reached"]
             '"--dangerously-bypass-approvals-and-sandbox", "-o", "{last_message_file}", "-"]': "conflicts",
             'read_only_command = ["codex", "exec", "--sandbox", "read-only", "-c", '
             '"sandbox = \\"workspace-write\\"", "-o", "{last_message_file}", "-"]': "conflicts",
+            'read_only_command = ["codex", "exec", "--sandbox", "read-only", "--config=sandbox_mode=\\"danger-full-access\\"", '
+            '"-o", "{last_message_file}", "-"]': "conflicts",
+            'read_only_command = ["codex", "exec", "--sandbox", "read-only", "-c", '
+            '"model_reasoning_effort=ludicrous", "-o", "{last_message_file}", "-"]': "conflicts",
+            'read_only_command = ["codex", "exec", "--sandbox", "read-only", "-c", '
+            '"-o", "{last_message_file}", "-"]': "conflicts",
             # no host-captured final message
             'read_only_command = ["codex", "exec", "--sandbox", "read-only", "-"]': "last_message_file",
             # unverified CLI adapter

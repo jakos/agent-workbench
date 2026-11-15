@@ -196,10 +196,15 @@ READ_ONLY_SANDBOX = "read-only"
 READ_ONLY_FORBIDDEN_ARGS = {
     "--full-auto",
     "--dangerously-bypass-approvals-and-sandbox",
-    "-c",
-    "--config",
     "--ask-for-approval",
     "--oss",
+}
+# A read-only command may carry `-c key=value` / `--config key=value` only for a key listed
+# here, with one of the listed values: such a key cannot widen the sandbox or the approval
+# policy. Any other key, a malformed override or an unlisted value is refused, so a typo
+# or an edited profile cannot silently make a producer role writable.
+READ_ONLY_SAFE_CONFIG = {
+    "model_reasoning_effort": {"minimal", "low", "medium", "high", "xhigh"},
 }
 # Shell metacharacters are refused inside any read_only_command argument: on Windows a
 # .cmd/.bat shim runs through cmd.exe, where they would be live.
@@ -1028,7 +1033,8 @@ def verify_read_only_command(command: list[str]) -> str | None:
 
     Only a verified Codex read-only execution passes today: `codex exec` with an
     explicit `--sandbox read-only` (no other sandbox value, no --full-auto, no approval
-    bypass, no -c/--config override) and a `-o {last_message_file}` final-message
+    bypass, no -c/--config override except the safe keys in
+    READ_ONLY_SAFE_CONFIG) and a `-o {last_message_file}` final-message
     capture, so the host — not the model — owns the artifact text. Unverified CLI
     adapters are refused; read-only behavior is never inferred from a profile name.
     """
@@ -1073,10 +1079,32 @@ def verify_read_only_command(command: list[str]) -> str | None:
                 f"--sandbox {READ_ONLY_SANDBOX}"
             )
     for argument in rest:
-        if argument in READ_ONLY_FORBIDDEN_ARGS or argument.startswith("--config="):
+        if argument in READ_ONLY_FORBIDDEN_ARGS:
             return (
                 f"{argument!r} conflicts with the read-only guarantee (workspace-write "
                 "or full-auto sandbox, approval bypass, or a config override)"
+            )
+    index = 0
+    while index < len(rest):
+        argument = rest[index]
+        override = None
+        if argument in ("-c", "--config"):
+            override = rest[index + 1] if index + 1 < len(rest) else ""
+            index += 1
+        elif argument.startswith("--config="):
+            override = argument.split("=", 1)[1]
+        elif argument.startswith("-c") and not argument.startswith("--"):
+            override = argument[2:].removeprefix("=")
+        index += 1
+        if override is None:
+            continue
+        key, _, value = override.partition("=")
+        value = value.strip().strip("\"'")
+        if value not in READ_ONLY_SAFE_CONFIG.get(key.strip(), ()):
+            return (
+                f"config override {override!r} conflicts with the read-only guarantee; "
+                f"only {', '.join(f'{k}={sorted(v)}' for k, v in READ_ONLY_SAFE_CONFIG.items())} "
+                "may be overridden"
             )
     output_captured = False
     index = 0

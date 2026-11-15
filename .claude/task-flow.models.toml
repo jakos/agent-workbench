@@ -66,10 +66,98 @@ read_only_command = ["codex", "exec", "--sandbox", "read-only", "--json", "--eph
 usage_format = "codex-jsonl"
 timeout_seconds = 1800
 
+# Per-role Codex profiles (models from ~/.codex/models_cache.json, checked 2026-11-11).
+# gpt-6-astra: "Frontier intelligence for the most demanding work" (272k context) for the
+# reviewer; gpt-6.1-sol: "Latest workhorse model for coding" (500k context) for the planner
+# and implementer; gpt-6-luna for the cheap backlog role. The reasoning effort is set per
+# profile with `-c model_reasoning_effort=<effort>`; models.py allows that one key (and
+# no other -c/--config override) even in a read-only command.
+#
+#   role         profile                  model         effort
+#   backlog      codex-backlog            gpt-6-luna    low
+#   planner      codex-plan               gpt-6.1-sol   high (static: one profile per role)
+#   implementer  codex-impl / -impl-high  gpt-6.1-sol   medium, high for large plans (bands)
+#   reviewer     codex-review             gpt-6-astra   medium
+#   checker      script
+
+[profiles.codex-plan]
+driver = "cli"
+model = "gpt-6.1-sol"
+billing = "subscription"
+command = ["codex", "exec", "-c", "model_reasoning_effort=high", "--sandbox", "workspace-write", "--json", "--ephemeral", "-m", "gpt-6.1-sol", "-"]
+read_only_command = ["codex", "exec", "-c", "model_reasoning_effort=high", "--sandbox", "read-only", "--json", "--ephemeral", "-m", "gpt-6.1-sol", "-o", "{last_message_file}", "-"]
+usage_format = "codex-jsonl"
+timeout_seconds = 1800
+
+[profiles.codex-impl]
+driver = "cli"
+model = "gpt-6.1-sol"
+billing = "subscription"
+command = ["codex", "exec", "-c", "model_reasoning_effort=medium", "--sandbox", "workspace-write", "--json", "--ephemeral", "-m", "gpt-6.1-sol", "-"]
+read_only_command = ["codex", "exec", "-c", "model_reasoning_effort=medium", "--sandbox", "read-only", "--json", "--ephemeral", "-m", "gpt-6.1-sol", "-o", "{last_message_file}", "-"]
+usage_format = "codex-jsonl"
+# unattended-isolation round 1 ran the full 1800 s and was killed during its own
+# verification run; a large round needs more time.
+timeout_seconds = 3600
+
+[profiles.codex-impl-high]
+driver = "cli"
+model = "gpt-6.1-sol"
+billing = "subscription"
+command = ["codex", "exec", "-c", "model_reasoning_effort=high", "--sandbox", "workspace-write", "--json", "--ephemeral", "-m", "gpt-6.1-sol", "-"]
+read_only_command = ["codex", "exec", "-c", "model_reasoning_effort=high", "--sandbox", "read-only", "--json", "--ephemeral", "-m", "gpt-6.1-sol", "-o", "{last_message_file}", "-"]
+usage_format = "codex-jsonl"
+timeout_seconds = 3600
+
+[profiles.codex-review]
+driver = "cli"
+model = "gpt-6-astra"
+billing = "subscription"
+command = ["codex", "exec", "-c", "model_reasoning_effort=medium", "--sandbox", "workspace-write", "--json", "--ephemeral", "-m", "gpt-6-astra", "-"]
+read_only_command = ["codex", "exec", "-c", "model_reasoning_effort=medium", "--sandbox", "read-only", "--json", "--ephemeral", "-m", "gpt-6-astra", "-o", "{last_message_file}", "-"]
+usage_format = "codex-jsonl"
+timeout_seconds = 1800
+
+[profiles.codex-backlog]
+driver = "cli"
+model = "gpt-6-luna"
+billing = "subscription"
+command = ["codex", "exec", "-c", "model_reasoning_effort=low", "--sandbox", "workspace-write", "--json", "--ephemeral", "-m", "gpt-6-luna", "-"]
+read_only_command = ["codex", "exec", "-c", "model_reasoning_effort=low", "--sandbox", "read-only", "--json", "--ephemeral", "-m", "gpt-6-luna", "-o", "{last_message_file}", "-"]
+usage_format = "codex-jsonl"
+timeout_seconds = 1800
+
 [roles]
-implementer = "codex"
-planner = "codex"
-backlog = "claude:sonnet"
+planner = "codex-plan"
+backlog = "codex-backlog"
 checker = "script"
-reviewer = "claude:sonnet"
+reviewer = "codex-review"
+
+# Effort for the implementer follows the size of the approved plan: S and M use medium, L
+# (overflow) uses high. Bounds are inclusive and count the plan's Steps, AC labels,
+# verification commands and declared paths. The numbers are a first guess: tune them.
+[roles.implementer]
+default = "codex-impl"
+
+[roles.implementer.bands]
+S = "codex-impl"
+M = "codex-impl"
+L = "codex-impl-high"
+
+[roles.implementer.thresholds.S]
+steps = 3
+criteria = 3
+commands = 3
+declared_paths = 4
+
+[roles.implementer.thresholds.M]
+steps = 6
+criteria = 6
+commands = 6
+declared_paths = 10
+
+# verify.py runs the whole shared gate list in one command and takes longer than the
+# 600 s default on a Windows host (it timed out in the unattended-isolation baseline).
+[gates]
+command_timeout_seconds = 2400
 
