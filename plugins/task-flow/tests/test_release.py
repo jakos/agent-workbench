@@ -539,7 +539,7 @@ class ReleaseGitTest(unittest.TestCase):
         failure = next(f for f in report["failures"] if f["code"] == "no-base")
         self.assertIn("--since", failure["message"])
 
-    def test_refuses_task_in_flight(self):
+    def test_warns_but_does_not_refuse_task_in_flight(self):
         self.git("tag", "-a", "demo-1.2.3", "-m", "x", self.initial)
         task = self.root / ".work" / "t1"
         task.mkdir()
@@ -548,9 +548,11 @@ class ReleaseGitTest(unittest.TestCase):
             encoding="utf-8",
         )
         result, report = self.check()
-        self.assertEqual(result.returncode, 1)
-        failure = next(f for f in report["failures"] if f["code"] == "task-in-flight")
-        self.assertIn("t1", failure["message"])
+        self.assertEqual(result.returncode, 0)
+        self.assertTrue(report["ok"], report["failures"])
+        self.assertEqual(report["failures"], [])
+        warning = next(w for w in report["warnings"] if w["code"] == "task-in-flight")
+        self.assertIn("t1", warning["message"])
 
     def test_verify_pass_and_fail(self):
         self.write_config(

@@ -935,7 +935,7 @@ live in `.claude/task-flow.release.toml` (override with `--config <path>`).
    `policy.py decide release` with project and isolation arguments from Policy.
    Skip the question only on exit 0 with `auto (explicit)`; log that explicit
    source. Exit 1 asks; exit 2 refuses. Show current → new version and the
-   bump, the files that change, the changelog entry, the commit message and the tag.
+   bump, any `warnings` from step 2 (for example tasks in flight, which do not block a release), the files that change, the changelog entry, the commit message and the tag.
    When exit 1 requires a question, ask approve / edit / cancel. Edit version: remember that explicit `<version>` and re-run
    step 2 with it (replacing any version or `--major` / `--minor` / `--patch` in
    `$ARGUMENTS`). Edit entry: write the edited entry to

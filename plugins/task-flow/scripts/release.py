@@ -43,7 +43,9 @@ Decisions, in short form:
 8. The changelog entry groups commits (Breaking changes / Features / Fixes / Other, the
    order given, newest first) and is prepended after a `# ` title line, or creates
    `# Changelog` when the file does not exist.
-9. `check` collects every failure and prints one JSON object (indent 2); `verify` runs
+9. `check` collects every failure and prints one JSON object (indent 2) with `failures`
+   (any of them refuses) and `warnings` (shown, never refusing: tasks in flight, because
+   tasks work on their own branches and never touch versions or changelogs); `verify` runs
    each check as an argument list, under the `checker` role's command rules from
    `rules.py`; `apply` re-runs the check logic, computes every new file text in memory
    (any error there is exit 2 with nothing written) and only then writes the files,
@@ -591,6 +593,7 @@ def evaluate(
 ) -> dict:
     """Evaluate every precondition; collect all failures without stopping at the first."""
     failures: list[dict] = []
+    warnings: list[dict] = []
     branch = current_branch(root)
     if branch not in target["branches"]:
         failures.append(
@@ -721,7 +724,10 @@ def evaluate(
         failures.append({"code": "tag-exists", "message": f"tag {tag} already exists"})
     in_flight = tasks_in_flight(root)
     if in_flight:
-        failures.append(
+        # Tasks run on their own branches and never edit versions or changelogs, so a
+        # task in flight does not block a release from the base branch; it is shown at
+        # the approval gate. A stranded status file must not block releases forever.
+        warnings.append(
             {
                 "code": "task-in-flight",
                 "message": f"task-flow tasks in flight: {', '.join(in_flight)}",
@@ -745,6 +751,7 @@ def evaluate(
         else None,
         "entry": render_entry(version, day, commits) if version is not None else None,
         "failures": failures,
+        "warnings": warnings,
         "_commits": commits,
         "_date": day,
     }
@@ -824,6 +831,8 @@ def run_apply(root: Path, name: str, target: dict, args) -> int:
         for failure in state["failures"]:
             print(f"refused: {failure['code']}: {failure['message']}")
         return 1
+    for warning in state["warnings"]:
+        print(f"warning: {warning['code']}: {warning['message']}", file=sys.stderr)
     version = state["version"]
     current = state["current"]
     tag = state["tag"]
