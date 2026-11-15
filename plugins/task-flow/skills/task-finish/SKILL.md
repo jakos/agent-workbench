@@ -57,7 +57,7 @@ human runs `grant-push` or `grant-pr` with the same `--task-dir` in a separate
 interactive terminal and confirms the exact request digest. The orchestrator does
 not invoke the credential-bearing `publish`, `advance` or `delivery` operations.
 The external launcher runs those commands with process-scoped authentication only;
-see the setup checklist in `docs/task-flow/policy.md`.
+see [Trusted publication handoff](../workflow/orchestration.md#trusted-publication-handoff-project-opt-in).
 
 Retain every `publication*.md` through pruning. Keep task branches and worktrees
 needed by descendants until delivery verification is complete. Report local

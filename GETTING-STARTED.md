@@ -29,9 +29,6 @@ claude plugin details dev-baseline
 You want `Skills (4)`, `Agents (1)`, `Hooks (2)`. If `claude plugin list` says **failed to
 load**, read the error — that is the only place a broken plugin announces itself.
 
-> Working on the plugin itself? Sessions started inside this repo can load the working tree
-> on top of the released copy — see Working on this repo.
-
 ## 1. In the new repo: find the gate before writing anything
 
 Open Claude Code in the repo and ask:
@@ -167,10 +164,6 @@ $env:MISTRAL_API_KEY = "..."
 ```
 
 POSIX shells: `export MISTRAL_API_KEY=...`.
-
-Profiles, roles, limits and how to switch it off again:
-External implementer and
-Rolling back.
 
 ## When something seems wrong
 
