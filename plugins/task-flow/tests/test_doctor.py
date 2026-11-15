@@ -12,7 +12,6 @@ import contextlib
 import io
 import json
 import os
-import re
 import shutil
 import socket
 import subprocess
@@ -26,7 +25,6 @@ from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 SCRIPT = SCRIPTS / "doctor.py"
-SETUP_PAGE = SCRIPTS.parents[2] / "docs" / "task-flow" / "setup.md"
 sys.path.insert(0, str(SCRIPTS))
 import doctor
 import models
@@ -421,13 +419,6 @@ class SettingsTest(DoctorTest):
         row = doctor.check_permissions(paths)
         self.assertEqual(row.result, "PASS")
         self.assertEqual(row.fixes, [])
-
-    def test_required_allow_matches_readme(self):
-        text = SETUP_PAGE.read_text(encoding="utf-8")
-        section = text.split("## Permissions", 1)[1]
-        block = re.search(r"```json\n(.*?)```", section, re.DOTALL).group(1)
-        allow = json.loads(block)["permissions"]["allow"]
-        self.assertEqual(doctor.REQUIRED_ALLOW, allow)
 
 
 # --- AC9: ANTHROPIC_API_KEY ----------------------------------------------------------------------

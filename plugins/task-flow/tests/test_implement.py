@@ -1657,7 +1657,9 @@ class AnthropicLoopTest(RoundFixture):
         # requests went to /v1/messages with the key in x-api-key, no Authorization
         self.assertEqual(server.requests[0]["path"], "/v1/messages")
         self.assertEqual(server.requests[0]["api_key"], "fake-key")
-        self.assertEqual(server.requests[0]["anthropic_version"], implement.drivers.ANTHROPIC_VERSION)
+        self.assertEqual(
+            server.requests[0]["anthropic_version"], implement.drivers.ANTHROPIC_VERSION
+        )
         self.assertIsNone(server.requests[0]["auth"])
         body = server.requests[0]["body"]
         self.assertEqual(body["tool_choice"], {"type": "auto"})

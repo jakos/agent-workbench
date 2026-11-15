@@ -151,7 +151,9 @@ class ConfigTest(unittest.TestCase):
             CONFIG.replace("90", "0"),
             CONFIG.replace("40000", "true"),
             CONFIG.replace("80000", "2000"),
-            CONFIG.replace(config()["model"], config()["model"].rsplit("-", 1)[0] + "-latest"),
+            CONFIG.replace(
+                config()["model"], config()["model"].rsplit("-", 1)[0] + "-latest"
+            ),
             "[review]\nenabled=true",
             "broken = [",
         ):
