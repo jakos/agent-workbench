@@ -12,6 +12,6 @@
 # formatter settings stay at the pinned ruff's defaults.
 #
 # The check/format findings that remain on main are pre-existing (recorded in the
-# round-0 baseline and listed in docs/development.md). Do not reformat or rewrite
+# round-0 baseline). Do not reformat or rewrite
 # unrelated source to silence them from this file.
 target-version = "py311"

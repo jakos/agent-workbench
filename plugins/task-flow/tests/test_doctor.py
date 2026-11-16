@@ -1058,6 +1058,24 @@ class WorkflowHookEvidenceTest(unittest.TestCase):
         self.assertEqual([row.result for row in checks], ["PASS", "WARN"])
         self.assertIn("directly", checks[0].detail)
         self.assertIn("unverified", checks[1].detail)
+        self.assertIn("no hook loading proven", checks[0].detail)
+        self.assertIn("no Claude Code tool event observed", checks[1].detail)
+        action = " ".join(checks[1].fixes)
+        for required in (
+            "Configuration inspection and direct handler probes do not prove",
+            "uv run --script",
+            str(SCRIPTS / "doctor.py"),
+            "--hook-fixture",
+            "start Claude Code",
+            "with task-flow loaded",
+            "Task directory:",
+            ".work/allowed",
+            ".work/denied",
+            "actual PreToolUse events",
+            "allowing the first launch and denying the second",
+            "disposable fixture",
+        ):
+            self.assertIn(required, action)
 
     def test_configuration_missing_and_broken_handler(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

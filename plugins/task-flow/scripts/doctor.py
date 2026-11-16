@@ -323,7 +323,17 @@ plan-risk: low
             "WARN",
             "unverified: no Claude Code tool event observed",
             [
-                "Run manual hook-firing in docs/task-flow/enforcement.md in an available session."
+                (
+                    "Configuration inspection and direct handler probes do not prove actual "
+                    "Claude Code event firing. Run "
+                    f'uv run --script "{plugin_root / "scripts" / "doctor.py"}" --hook-fixture to retain a '
+                    "disposable fixture, then start Claude Code in its printed project path "
+                    "with task-flow loaded. Request protected implementer launches with "
+                    "'Task directory: <absolute-fixture-project>/.work/allowed' and then "
+                    "'Task directory: <absolute-fixture-project>/.work/denied' in their "
+                    "prompts. Observe actual PreToolUse events allowing the first launch "
+                    "and denying the second; keep all work inside the disposable fixture."
+                )
             ],
         ),
     ]
