@@ -18,8 +18,10 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
+import approval_witness
 import policy
 import role_contracts
+from rules import witness_command, witness_write
 
 PHASES = {
     "new",
@@ -340,7 +342,8 @@ def parse_log(raw: bytes, task_id: str) -> list[dict]:
         }
         if (
             not isinstance(event, dict)
-            or set(event) not in (required, required | {"rebase"})
+            or set(event)
+            not in (required, required | {"rebase"}, required | {"authorization"})
             or event["schema"] != SCHEMA
             or event["task"] != task_id
             or type(event["allowed"]) is not bool
@@ -378,6 +381,23 @@ def parse_log(raw: bytes, task_id: str) -> list[dict]:
                 or state["round"] < 0
             ):
                 raise Refusal("invalid logged state")
+        if "authorization" in event:
+            evidence = event["authorization"]
+            if (
+                not isinstance(evidence, dict)
+                or set(evidence) != {"channel", "reference"}
+                or evidence["channel"] not in ("user-prompt", "terminal")
+                or not isinstance(evidence["reference"], str)
+                or not re.fullmatch(r"[a-f0-9]{64}", evidence["reference"])
+                or event["source"] != "user"
+                or not event["allowed"]
+                or event["action"] not in ("approve", "grant")
+                or any(
+                    e.get("authorization", {}).get("reference") == evidence["reference"]
+                    for e in entries
+                )
+            ):
+                raise Refusal("invalid authorization reference")
         if "rebase" in event:
             link = event["rebase"]
             keys = {
@@ -707,6 +727,65 @@ def rebase_status(
     )
 
 
+def authorization_request(
+    task: Path,
+    action: str,
+    ceiling: int,
+    *,
+    channel: str,
+    session: str | None,
+    home: Path | None = None,
+    approved_digest: str | None = None,
+    approved_attempt: str | None = None,
+) -> None:
+    """Issue only through the real prompt hook or explicit interactive CLI path."""
+    task = task.resolve()
+    if task.parent.name != ".work" or not task.is_dir():
+        raise Refusal("task must be an existing ordinary .work directory")
+    loaded = policy.effective(policy.load(task.parent.parent, home or Path.home()))
+    if loaded["mode"] == "legacy":
+        return
+    with locked(task):
+        text, state = status(task)
+        plan = read(task / "plan.md")
+        validated = role_contracts.validate_plan(plan)
+        if not validated.ok or validated.blocked:
+            raise Refusal("invalid or blocked plan")
+        entries = log_entries(task)
+        token = digest(plan.encode("utf-8"))
+        identity = resolved_attempt(text, state, task, entries)
+        if approved_digest is not None and token != approved_digest:
+            raise Refusal("plan changed during human authorization")
+        if approved_attempt is not None and identity != approved_attempt:
+            raise Refusal("task attempt changed during human authorization")
+        limit = max(
+            [
+                loaded["values"]["max_rounds"],
+                *[
+                    e["ceiling"]
+                    for e in entries
+                    if e["allowed"]
+                    and e["action"] == "grant"
+                    and e["source"] == "user"
+                    and e["attempt"] == identity
+                    and e["plan"] == token
+                ],
+            ]
+        )
+        if action == "approve":
+            if (
+                state["phase"] not in ("planned", "approved")
+                or state["round"] != 0
+                or ceiling != 0
+            ):
+                raise Refusal("approval requires planned round 0")
+        elif action != "grant" or type(ceiling) is not int or ceiling <= limit:
+            raise Refusal("grant needs a finite ceiling above the current limit")
+        approval_witness.issue(
+            task, action, token, identity, ceiling, channel=channel, session=session
+        )
+
+
 def decide(
     task: Path,
     action: str,
@@ -785,13 +864,10 @@ def decide(
                         and entry["allowed"]
                         and entry["source"] == "user"
                         and entry["attempt"] == event["attempt"]
+                        and entry["plan"] == event["plan"]
                     ):
                         limit = max(limit, entry["ceiling"])
                 if action in ("approve", "grant"):
-                    if source == "user" and not human:
-                        raise Refusal(
-                            "human authorization requires the separate interactive terminal path"
-                        )
                     if action == "grant":
                         if (
                             source != "user"
@@ -819,6 +895,14 @@ def decide(
                             raise Refusal("approval requires planned round 0")
                         event["after"] = {"phase": "approved", "round": 0}
                         result_text = replace_status(text, state, "approved", 0, source)
+                    if source == "user":
+                        event["authorization"] = approval_witness.consume(
+                            task,
+                            action,
+                            event["plan"],
+                            event["attempt"],
+                            ceiling,
+                        )
                 elif action == "rebase":
                     authorize(entries, event, loaded, task)
                     event["ceiling"] = 0
@@ -1104,7 +1188,7 @@ def project_from_cwd(cwd: Path) -> Path:
 
 
 def hook(payload: dict, *, home: Path | None = None) -> str | None:
-    """Return a denial only for recognized workflow actions. No prompt grants authority."""
+    """Recognize exact real user commands; other prompts only select context."""
     if not isinstance(payload, dict):
         return "workflow hook payload must be an object"
     if not isinstance(payload.get("tool_input", {}), dict):
@@ -1116,6 +1200,16 @@ def hook(payload: dict, *, home: Path | None = None) -> str | None:
     inputs = payload.get("tool_input") or {}
     prompt = str(inputs.get("prompt") or "")
     command = str(inputs.get("command") or "")
+    if event != "UserPromptSubmit":
+        denial = None
+        if tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+            denial = witness_write(
+                str(inputs.get("file_path") or inputs.get("notebook_path") or ""), cwd
+            )
+        elif tool in ("Bash", "PowerShell"):
+            denial = witness_command(command, cwd)
+        if denial:
+            return "workflow gate: " + denial
     launch_role = inputs.get("subagent_type")
     launch = tool in ("Agent", "Task") and launch_role in (
         "task-flow:implementer",
@@ -1169,6 +1263,30 @@ def hook(payload: dict, *, home: Path | None = None) -> str | None:
             r"/task-flow:task-(?:run|check|finish) ([a-z0-9][a-z0-9-]*)",
             str(payload.get("prompt") or "").strip(),
         )
+        authorization = re.fullmatch(
+            r"/task-flow:task-(approve|grant) ([a-z0-9][a-z0-9-]*)(?: ([1-9][0-9]*))?",
+            str(payload.get("prompt") or ""),
+        )
+        if event == "UserPromptSubmit" and authorization:
+            action, task_id, raw_ceiling = authorization.groups()
+            if (
+                (action == "grant") != (raw_ceiling is not None)
+                or not isinstance(payload.get("session_id"), str)
+                or not session.strip()
+                or payload.get("agent_type")
+                or tool
+                or inputs
+            ):
+                return "workflow gate: authorization requires an exact real user command and session"
+            authorization_request(
+                project / ".work" / task_id,
+                action,
+                int(raw_ceiling) if raw_ceiling else 0,
+                channel="user-prompt",
+                session=session,
+                home=home,
+            )
+            return None
         if event == "UserPromptSubmit" and not match:
             if session:
                 context_file.unlink(missing_ok=True)
@@ -1186,11 +1304,11 @@ def hook(payload: dict, *, home: Path | None = None) -> str | None:
                 context_file.unlink(missing_ok=True)
             return None
         if phase_cli:
-            if re.search(r"\b(?:approve|grant|recover)\b", command) and re.search(
+            if re.search(r"\brecover\b", command) and re.search(
                 r"--source(?:=|\s+)[\"']?user\b", command
             ):
                 raise Refusal(
-                    "human approval/grants must run in a separate terminal, outside model tools"
+                    "audit recovery must run in a separate terminal, outside model tools"
                 )
             if not mutation and not status_mutation:
                 return None  # The CLI itself checks and records each transition.
@@ -1270,7 +1388,7 @@ def hook_main() -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument(
         "action",
         choices=(
@@ -1295,6 +1413,7 @@ def main(argv: list[str] | None = None) -> int:
         "--source", choices=("user", "policy", "--auto"), default="policy"
     )
     parser.add_argument("--ceiling", type=int, default=0)
+    parser.add_argument("--terminal", action="store_true")
     parser.add_argument("--base")
     parser.add_argument("--worktree")
     parser.add_argument("--message")
@@ -1304,7 +1423,11 @@ def main(argv: list[str] | None = None) -> int:
             initialize(args.task_dir, args.base or "")
             print("initialized unapproved task")
             return 0
-        human = args.source == "user" and args.action in ("approve", "grant", "recover")
+        if args.terminal and (
+            args.source != "user" or args.action not in ("approve", "grant")
+        ):
+            raise Refusal("--terminal requires approve or grant --source user")
+        human = args.source == "user" and (args.terminal or args.action == "recover")
         approved_digest, approved_attempt = (
             human_confirmation(args.task_dir, args.action, args.ceiling)
             if human
@@ -1314,6 +1437,16 @@ def main(argv: list[str] | None = None) -> int:
             recover(args.task_dir, human=human)
             print("recovered interrupted tail; retry the original operation")
             return 0
+        if args.terminal:
+            authorization_request(
+                args.task_dir,
+                args.action,
+                args.ceiling,
+                channel="terminal",
+                session=None,
+                approved_digest=approved_digest,
+                approved_attempt=approved_attempt,
+            )
         result = decide(
             args.task_dir,
             args.action,

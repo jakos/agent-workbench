@@ -14,6 +14,10 @@ ValueError.
 
 Rules per role:
 
+- every session and role: no model-side witness issuance, terminal fallback, or
+  mutation of repository-root .work/.approval-witnesses/ and its ancestors. The
+  guard applies these checks before selecting a role. Bare consumer CLIs are allowed.
+
 - planner, implementer, checker, reviewer, backlog (the Claude agents): writes are
   confined to a `.work/` directory (the implementer may write anywhere); no push, no
   PR, no deploy — nothing leaves the machine; no `git commit`; planner, reviewer and
@@ -194,6 +198,103 @@ def _is_snooze_file(path: str) -> bool:
     return parts[-2:] == [".habit-hooks", "snooze.json"]
 
 
+def _normalized_path(path: str) -> str:
+    parts = [
+        p if p in (".", "..") else p.rstrip(". ").casefold()
+        for p in path.replace("\\", "/").split("/")
+    ]
+    return posixpath.normpath("/".join(parts))
+
+
+def witness_write(path: str, cwd: str | Path | None = None) -> str | None:
+    """Protect the complete reserved directory, including replacement of ancestors."""
+    normalized = _normalized_path(path)
+    parts = normalized.split("/")
+    protected = ".approval-witnesses" in parts
+    protected |= normalized in (".work", ".", "..") or normalized.endswith("/.work")
+    if cwd is not None:
+        here = Path(cwd).resolve()
+        project = here
+        for parent in (here, *here.parents):
+            if parent.name == "worktree" and parent.parent.parent.name == ".work":
+                project = parent.parent.parent.parent
+                break
+            if (parent / ".git").exists():
+                project = parent
+                break
+        root = _normalized_path(str(project))
+        absolute = normalized
+        if not posixpath.isabs(absolute) and not re.match(r"^[a-z]:/", absolute):
+            absolute = posixpath.normpath(_normalized_path(str(here)) + "/" + absolute)
+        reserved = root + "/.work/.approval-witnesses"
+        protected |= (
+            reserved == absolute
+            or reserved.startswith(absolute.rstrip("/") + "/")
+            or absolute.startswith(reserved + "/")
+        )
+    return (
+        "authorization witnesses are written only by the user-prompt hook or explicit terminal path"
+        if protected
+        else None
+    )
+
+
+def witness_command(command: str, cwd: str | Path | None = None) -> str | None:
+    """Deny supported model-tool issuance and evidence mutations for every role.
+
+    Raw shell text checks deliberately do not claim to sandbox arbitrary programs.
+    Read commands and the bare gate consumer remain available.
+    """
+    lowered = command.casefold()
+    # Normalize ordinary shell argument quoting, including adjacent quoted parts.
+    # This covers supported CLI spellings without claiming to parse shell programs.
+    cli = lowered.replace('"', "").replace("'", "")
+    if re.search(r"\bphase_gate\.py\s+hook\b", cli):
+        return "the real user-prompt hook cannot be invoked from model tools"
+    if re.search(
+        r"\b(?:from\s+phase_gate\s+import|import\s+phase_gate)\b|(?<!\S)-m\s+phase_gate\s+hook\b",
+        cli,
+    ):
+        return "model tools must use the validated phase_gate.py consumer CLI"
+    if (
+        "phase_gate.py" in cli
+        # Also deny historical argparse abbreviations; the CLI rejects them now.
+        and re.search(r"--(?:t|te|ter|term|termi|termin|termina|terminal)\b", cli)
+        or re.search(
+            r"\b(?:authorization_request|approval_witness\.issue)\s*\(", lowered
+        )
+        or re.search(
+            r"\b(?:from\s+approval_witness\s+import|import\s+approval_witness)\b",
+            lowered,
+        )
+    ):
+        return "authorization issuance requires a real user prompt or a separate interactive terminal"
+    mutates = re.search(
+        r"\b(?:rm|rmdir|rd|del|erase|mv|move|cp|copy|rename|ren|mkdir|touch|tee|"
+        r"remove-item|move-item|copy-item|rename-item|new-item|set-content|add-content|"
+        r"out-file|clear-content|set-item|rmtree|unlink|replace|write_text|write_bytes|sed)\b|[>]",
+        lowered,
+    )
+    interpreter = re.search(
+        r"(?:^|[;&|\n])\s*(?:python(?:3)?|py|node|perl|ruby)\s", lowered
+    )
+    if ".approval-witnesses" in lowered and (mutates or interpreter):
+        return "model tools cannot mutate authorization witness storage"
+    if mutates:
+        words = re.findall(r"[^\s\"';&|<>]+", command)
+        # Retain complete quoted paths as well as tokens inside inline programs.
+        words.extend(a or b for a, b in re.findall(r"\"([^\"]*)\"|'([^']*)'", command))
+        for word in words:
+            # Wildcard directory mutations also replace/delete protected descendants.
+            path = word
+            if "*" in word or "?" in word:
+                prefix = re.split(r"[*?]", word, maxsplit=1)[0].replace("\\", "/")
+                path = prefix.rsplit("/", 1)[0] if "/" in prefix else "."
+            if path and witness_write(path, cwd):
+                return "model tools cannot replace or delete authorization witness ancestors"
+    return None
+
+
 def check_command(command: str, role: str) -> str | None:
     """Return None to allow `command` for `role`, or the denial reason.
 
@@ -203,6 +304,9 @@ def check_command(command: str, role: str) -> str | None:
     segment, then the read-only git rule.
     """
     _known_role(role)
+    reason = witness_command(command)
+    if reason:
+        return reason
     if re.search(r"\bpublish_task(?:\.py)?\b", command, re.IGNORECASE):
         return "publication requires the trusted launcher outside model sessions"
     if re.search(r"\bautopilot\.py\b[^|;&\n]*\sdelivery\b", command, re.IGNORECASE):
@@ -370,6 +474,9 @@ def check_write(path: str, role: str, root: Path | str | None = None) -> str | N
     both the raw path and the resolved worktree-relative path.
     """
     _known_role(role)
+    reason = witness_write(path, root)
+    if reason:
+        return reason
     parts = [
         part.rstrip(". ").casefold() for part in path.replace("\\", "/").split("/")
     ]

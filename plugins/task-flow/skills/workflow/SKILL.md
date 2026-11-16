@@ -308,6 +308,18 @@ or prunes.
 
 ## Rounds and escalation
 
+With configured policy, the user can authorize the current plan by typing exactly
+`/task-flow:task-approve <task-id>` and grant a finite maximum round above the current
+limit with `/task-flow:task-grant <task-id> <ceiling>`. The real UserPromptSubmit hook
+issues action-bound, single-use evidence valid for five minutes. The corresponding
+skills consume it through `phase_gate.py` with `approve` or `grant` and `--source user`; their
+instructions and bare consumer calls create no authority. Changed plans or attempts,
+expiry and replay require a fresh user command. Explicit `--terminal` fallback for
+each action requires a separate interactive terminal and digest/attempt confirmation.
+See orchestration → Policy for full commands and partial-write recovery.
+Repository-root `.work/.approval-witnesses/`, including temporary, lock and consumed
+files, is reserved for trusted authorization code; model tools must never mutate it.
+
 When the delivered policy reader reports configured mode, `scripts/phase_gate.py`
 owns phase/round/approval transitions. Follow orchestration.md's enforced-transition
 instructions before the procedural rules below. Its shared checks also run before
@@ -342,7 +354,7 @@ stops cannot be overridden by an extra-round grant.
 A run stops at exactly these five points. `--auto` skips the approval gate (1); the
 other four apply identically with and without it:
 
-1. the approval gate;
+1. the approval gate (resume with the explicit user approval command when configured);
 2. `BLOCKED` from an agent (planner or implementer);
 3. `APPROVED`;
 4. no progress;

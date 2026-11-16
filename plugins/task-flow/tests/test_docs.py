@@ -107,6 +107,44 @@ def heading_anchors(text: str) -> set[str]:
 
 
 class DocumentationTest(unittest.TestCase):
+    def test_session_authorization_skills_and_navigation(self) -> None:
+        plugin = ROOT / "plugins" / "task-flow"
+        for name in ("task-approve", "task-grant"):
+            text = (plugin / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
+            frontmatter = text.split("---", 2)[1]
+            self.assertIn(f"name: {name}\n", frontmatter)
+            self.assertIn("disable-model-invocation: true", frontmatter)
+            for required in (
+                "--source user",
+                "--task-dir",
+                "--terminal",
+                "five minutes",
+                "attempt",
+                "single-use",
+                "current plan",
+            ):
+                self.assertIn(required, text)
+            self.assertIn(
+                f"/task-flow:{name} <task-id>",
+                (plugin / "README.md").read_text(encoding="utf-8"),
+            )
+        orchestration = (plugin / "skills/workflow/orchestration.md").read_text(
+            encoding="utf-8"
+        )
+        for required in (
+            "Three-platform Claude authorization smoke check",
+            "Windows, macOS and Linux",
+            ".work/.approval-witnesses/",
+            "status replacement",
+            "consumed nonce",
+            "--terminal",
+            "user-prompt",
+            "no progress",
+            "circuit",
+        ):
+            self.assertIn(required, orchestration)
+        self.assertNotIn("The prompt hook captures task context only", orchestration)
+
     def assert_readme(self, root: Path) -> None:
         text = (root / "README.md").read_text(encoding="utf-8")
         self.assertLessEqual(len(text.splitlines()), 100)

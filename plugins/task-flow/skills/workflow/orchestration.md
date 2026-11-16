@@ -59,11 +59,44 @@ BLOCKED evidence. Never rewrite the protected header. The gate preserves other p
 After planning, transition to planned. Approval uses the same script's `approve`
 action with `--source policy`, only if policy authorizes that specific plan.
 `--source=--auto` is recorded only when policy independently permits automatic
-approval; a model-supplied flag never creates authority. A human approval requires
-the user to run `approve --source user --task-dir <absolute-task-dir>` in a separate
-interactive terminal and type the displayed plan-digest challenge. Do not run that
-human command through model tools. Chat acknowledgement or `UserPromptSubmit`
-occurrence does not establish provenance. The prompt hook captures task context only.
+approval; a model-supplied flag never creates authority. For human approval, the user
+reviews the current plan and types exactly `/task-flow:task-approve <task-id>`.
+Only this real UserPromptSubmit command, with a nonempty session id, issues evidence.
+Consume it with
+`uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/phase_gate.py" approve --source user --task-dir <absolute-task-dir>`.
+The task id is mandatory; quoted examples, ordinary chat, extra arguments and
+model-invoked skill instructions create no authority. Context capture for task-run,
+task-check and task-finish remains separate from authorization.
+For autopilot and epics, a combined Start response does not authorize configured
+user approvals: each plan needing human approval requires its own exact task-approve
+command. Existing automatic policy decisions and legacy Start behavior are unchanged.
+
+Evidence is single-use, expires after five minutes, and binds canonical repository,
+task, plan digest, resolved attempt and action. Grants also bind their exact ceiling.
+It records the issuing session; the audit records only the channel (`user-prompt`
+or `terminal`) and an irreversible reference, never the prompt or reusable nonce.
+The entire repository-root `.work/.approval-witnesses/` directory is reserved,
+including temporary and consumed files. Never create, edit, replace or delete it
+through model tools. Main-session and agent guards run before role-specific returns.
+This protects supported tool surfaces for private single-user sessions with hooks
+enabled; it is not a sandbox against arbitrary adversarial code execution.
+
+After expiry, a changed plan/attempt, replay, or missing evidence, report the refusal
+and have the user review the current plan and repeat the exact command. Do not call
+the issuance hook yourself. Explicit fallback for the user in a separate interactive
+terminal:
+`uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/phase_gate.py" approve --source user --terminal --task-dir <absolute-task-dir>`.
+The terminal must have interactive stdin and stdout; confirm the displayed plan
+digest, attempt, action and ceiling. Bare consumers never start a challenge.
+
+Evidence is consumed before audit append and status publication. Storage or audit
+failure refuses authorization. If the audit append succeeds but status replacement
+fails, keep the consumed nonce consumed, fix the filesystem problem, and have the
+user issue a fresh approval command (or repeat the explicit terminal fallback).
+Retry approval to publish status; do not manually copy audit fields into status or
+restore consumed evidence. An interrupted audit tail still requires the separate
+`recover --source user --task-dir <absolute-task-dir>` terminal procedure; recovery
+does not authorize a plan or grant rounds.
 
 For an unstarted stacked task, compute the required base with `autopilot.py base`
 and validate it through
@@ -95,11 +128,25 @@ After a validated review, transition to review-approved on APPROVED, escalated o
 no progress or the round cap, or implementing with the next round otherwise.
 BLOCKED evidence permits transition to blocked. An invocation failure stays in the
 same phase and round; repeat the invocation after fixing its precondition.
-For authorized extra rounds, the human runs `grant --source user --ceiling <finite-n>
---task-dir <absolute-task-dir>` in the separate terminal. A grant is bound to this
-attempt, permits only that ceiling, and cannot bypass no progress or a circuit
+For authorized extra rounds, the user types exactly
+`/task-flow:task-grant <task-id> <ceiling>`. The ceiling is a finite integer maximum
+round number above the current limit, not a count of extra rounds. Consume with
+`uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/phase_gate.py" grant --source user --ceiling <ceiling> --task-dir <absolute-task-dir>`.
+Explicit user-only fallback in a separate interactive terminal:
+`uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/phase_gate.py" grant --source user --terminal --ceiling <ceiling> --task-dir <absolute-task-dir>`.
+A grant is bound to this plan and resolved attempt, permits only that ceiling,
+and cannot bypass no progress or a circuit
 breaker. An escalated round-cap task can then transition to implementing; never reset
 the attempt or silently raise limits.
+
+**Three-platform Claude authorization smoke check:** in real Claude sessions on
+Windows, macOS and Linux with hooks enabled and supervised policy, create a planned
+round-zero task. Record OS/runtime, exact command, observed transition and refusal
+evidence for: `/task-flow:task-approve <task-id>` once (approved, user source),
+`/task-flow:task-grant <task-id> 4` (ceiling 4), a bare consumer replay (refused),
+an edit to the plan after prompt issuance but before consumption (refused), and a
+model-side Write to `.work/.approval-witnesses/` (denied). Use a fresh prompt after
+each intended refusal. Fixture tests do not establish real slash-command hook behavior.
 
 Before **any** finish side effect (including SDLC refresh, record generation,
 commit or pruning), run `phase_gate.py finish --task-dir <absolute-task-dir>` using
@@ -240,7 +287,10 @@ subcommand resolves any role with `--override` (`models.py select <role> [--over
 4. **Approval gate.** Apply Policy (`decide plan-approval` and `allow-auto`) first. When it requires a question, ask: approve / edit / cancel (with `AskUserQuestion` when
    available). Do not continue without an explicit approve. "Edit" means the user's
    changes go into `task.md` as constraints and the planner runs again.
-5. On approve: `plan-approved: yes (user, <date>)`, phase `approved`.
+   With configured policy, human approval means the exact task-approve command and
+   evidence consumer above; a conversational answer alone does not authorize it.
+5. On approve: `plan-approved: yes (user, <date>)`, phase `approved`, through the
+   gate when policy is configured and through the legacy header procedure otherwise.
    With `--auto`: run `policy.py allow-auto --scope plan-approval --plan <plan.md>`
    first; skip only on exit 0. Legacy records `yes (--auto, <date>)`; configured
    approval records `yes (policy, <date>)` with preset and rating in Log. Exit 1

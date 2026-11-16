@@ -108,6 +108,85 @@ def guard_allows(agent_type: str, tool: str, tool_input: dict) -> bool:
 
 
 class RulesTest(unittest.TestCase):
+    def test_witness_rules_for_every_role_and_normalized_ancestors(self) -> None:
+        for role in rules.ROLES:
+            for path in (
+                ".work/.approval-witnesses/t1.json",
+                ".work/.approval-witnesses/.lock",
+                r"C:\repo\.WORK.\.approval-witnesses\consumed.json",
+                ".work/child/../.approval-witnesses",
+                ".work",
+            ):
+                with self.subTest(role=role, path=path):
+                    self.assertIsNotNone(rules.check_write(path, role, "/repo"))
+            for command in (
+                "rm -rf .work",
+                "mv fake .work/.approval-witnesses",
+                "Remove-Item .work/.approval-witnesses -Recurse",
+                "python phase_gate.py hook",
+                'python "phase_gate.py" "hook"',
+                "py 'phase_gate.py' 'hook'",
+                'python phase_gate.py h"oo"k',
+                'python -m "phase_gate" "hook"',
+                "py phase_gate.py approve --terminal",
+                'py phase_gate.py approve "--terminal"',
+                "py phase_gate.py approve --term",
+                "py phase_gate.py grant --term --ceiling 4",
+                'python -c "from approval_witness import issue"',
+            ):
+                with self.subTest(role=role, command=command):
+                    self.assertIsNotNone(rules.check_command(command, role))
+            self.assertIsNone(
+                rules.check_command(
+                    "python phase_gate.py approve --source user --task-dir .work/t1",
+                    role,
+                )
+            )
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory) / "repository with spaces"
+            (project / ".git").mkdir(parents=True)
+            for command in (
+                f'Remove-Item -Recurse "{project}"',
+                "rm -rf .",
+                "rm -rf .work/*",
+            ):
+                self.assertIsNotNone(rules.witness_command(command, project))
+            self.assertIsNone(rules.witness_command("cat .work/t1/plan.md", project))
+            self.assertIsNone(rules.witness_write("src/a.py", project))
+
+    def test_resolved_witness_descendants_and_siblings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory) / "repository with spaces"
+            (project / ".git").mkdir(parents=True)
+            reserved = project / ".work" / ".approval-witnesses"
+            nested = reserved / "nested"
+            nested.mkdir(parents=True)
+            for cwd in (reserved, nested):
+                for path in (
+                    "t1-approve.json",
+                    "./t1-approve.json",
+                    "../consumed.json",
+                ):
+                    if cwd == reserved and path.startswith("../"):
+                        continue
+                    with self.subTest(cwd=cwd, path=path):
+                        self.assertIsNotNone(rules.witness_write(path, cwd))
+                        for role in rules.ROLES:
+                            self.assertIsNotNone(rules.check_write(path, role, cwd))
+                for command in (
+                    "echo forged > t1-approve.json",
+                    "rm t1-approve.json",
+                    "mv replacement t1-approve.json",
+                    "Set-Content t1-approve.json forged",
+                ):
+                    with self.subTest(cwd=cwd, command=command):
+                        self.assertIsNotNone(rules.witness_command(command, cwd))
+                self.assertIsNone(rules.witness_command("cat t1-approve.json", cwd))
+            self.assertIsNone(rules.witness_write("../ordinary.txt", reserved))
+            self.assertIsNone(
+                rules.witness_write("../.approval-witnesses-other/file.json", reserved)
+            )
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)

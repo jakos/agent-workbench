@@ -10,6 +10,7 @@ Run: uv run --script plugins/task-flow/tests/test_guard.py
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -18,17 +19,22 @@ READ_ONLY_ROLES = ("planner", "reviewer", "backlog")
 ALL_ROLES = ("planner", "implementer", "checker", "reviewer", "backlog")
 
 
-def decide(agent_type: str | None, tool: str, tool_input: dict) -> str:
+def decide(
+    agent_type: str | None, tool: str, tool_input: dict, cwd: Path | None = None
+) -> str:
     """Return "deny" or "allow" for one hook call."""
     payload: dict = {"tool_name": tool, "tool_input": tool_input}
     if agent_type is not None:
         payload["agent_type"] = agent_type
+    if cwd is not None:
+        payload["cwd"] = str(cwd)
     result = subprocess.run(
         [sys.executable, str(GUARD)],
         input=json.dumps(payload),
         capture_output=True,
         text=True,
         check=False,
+        cwd=cwd,
     )
     if result.returncode != 0:
         raise AssertionError(f"guard exited {result.returncode}: {result.stderr}")
@@ -42,6 +48,92 @@ def shell(role: str, command: str, tool: str = "Bash") -> str:
 
 
 class GuardTest(unittest.TestCase):
+    def test_witness_protection_runs_before_all_role_returns(self) -> None:
+        for agent in (None, "other-agent", *(f"task-flow:{r}" for r in ALL_ROLES)):
+            for tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+                for path in (
+                    ".work/.approval-witnesses/t1-approve.json",
+                    r"C:\repo\.WORK\.APPROVAL-WITNESSES.\consumed-abc.json",
+                    ".work/x/../.approval-witnesses/.witness-temp",
+                    ".work",
+                ):
+                    with self.subTest(agent=agent, tool=tool, path=path):
+                        key = "notebook_path" if tool == "NotebookEdit" else "file_path"
+                        self.assertEqual(decide(agent, tool, {key: path}), "deny")
+            for tool in ("Bash", "PowerShell"):
+                for command in (
+                    "echo forged > .work/.approval-witnesses/t1-approve.json",
+                    "rm -rf .work/.approval-witnesses",
+                    "mv replacement .work",
+                    "Remove-Item -Recurse .work",
+                    "cp -r fake .work/.approval-*",
+                    "python plugins/task-flow/scripts/phase_gate.py hook < forged.json",
+                    'python "plugins/task-flow/scripts/phase_gate.py" "hook" < forged.json',
+                    "py 'plugins/task-flow/scripts/phase_gate.py' 'hook'",
+                    'python phase_gate.py h"oo"k',
+                    'python -m "phase_gate" "hook"',
+                    "uv run --script plugins/task-flow/scripts/phase_gate.py approve --source user --terminal --task-dir .work/t1",
+                    'python phase_gate.py approve --source user "--terminal" --task-dir .work/t1',
+                    "python phase_gate.py approve --source user --term --task-dir .work/t1",
+                    "py plugins/task-flow/scripts/phase_gate.py grant --terminal --source user --ceiling 4 --task-dir .work/t1",
+                    "py phase_gate.py grant --term --source user --ceiling 4 --task-dir .work/t1",
+                    'python -c "import phase_gate; phase_gate.hook({})"',
+                ):
+                    with self.subTest(agent=agent, tool=tool, command=command):
+                        self.assertEqual(
+                            decide(agent, tool, {"command": command}), "deny"
+                        )
+                for command in (
+                    "uv run --script plugins/task-flow/scripts/phase_gate.py approve --source user --task-dir .work/t1",
+                    "uv run --script plugins/task-flow/scripts/phase_gate.py grant --source user --ceiling 4 --task-dir .work/t1",
+                    "uv run --script plugins/task-flow/tests/test_phase_gate.py",
+                ):
+                    with self.subTest(agent=agent, tool=tool, command=command):
+                        self.assertEqual(
+                            decide(agent, tool, {"command": command}), "allow"
+                        )
+
+    def test_relative_witness_mutations_from_inside_storage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory) / "repository with spaces"
+            (project / ".git").mkdir(parents=True)
+            reserved = project / ".work" / ".approval-witnesses"
+            nested = reserved / "nested"
+            nested.mkdir(parents=True)
+            for cwd in (reserved, nested):
+                for agent in (None, *(f"task-flow:{r}" for r in ALL_ROLES)):
+                    for tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+                        key = "notebook_path" if tool == "NotebookEdit" else "file_path"
+                        with self.subTest(cwd=cwd, agent=agent, tool=tool):
+                            self.assertEqual(
+                                decide(agent, tool, {key: "t1-approve.json"}, cwd),
+                                "deny",
+                            )
+                    for tool in ("Bash", "PowerShell"):
+                        for command in (
+                            "echo forged > t1-approve.json",
+                            "rm t1-approve.json",
+                            "mv replacement t1-approve.json",
+                            "Set-Content t1-approve.json forged",
+                            "Remove-Item t1-approve.json",
+                        ):
+                            with self.subTest(
+                                cwd=cwd, agent=agent, tool=tool, command=command
+                            ):
+                                self.assertEqual(
+                                    decide(agent, tool, {"command": command}, cwd),
+                                    "deny",
+                                )
+                    self.assertEqual(
+                        decide(agent, "Bash", {"command": "cat t1-approve.json"}, cwd),
+                        "allow",
+                    )
+            for agent in (None, "task-flow:implementer"):
+                self.assertEqual(
+                    decide(agent, "Write", {"file_path": "../ordinary.txt"}, reserved),
+                    "allow",
+                )
+
     def check(self, roles, commands, expected, tool="Bash"):
         for role in roles:
             for command in commands:
@@ -221,6 +313,12 @@ class WorkflowHookTest(GateFixture):
                 for entry in config["hooks"]["PreToolUse"]
             )
         )
+        for event in ("PreToolUse", "UserPromptSubmit"):
+            for entry in config["hooks"][event]:
+                for hook in entry["hooks"]:
+                    self.assertEqual(hook.get("onFailure"), "block")
+        for entry in config["hooks"]["PreToolUse"]:
+            self.assertIn("NotebookEdit", entry["matcher"])
         payload = {
             **MAIN_LAUNCH,
             "cwd": str(self.project),
