@@ -15,6 +15,13 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+from test_rules import (
+    TERMINAL_OPTIONS,
+    phase_gate_consumer,
+    phase_gate_invocations,
+    quoted_terminal_option,
+)
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import approval_witness as witness
 import epics
@@ -291,6 +298,91 @@ class WitnessStorageTest(GateFixture):
 
 
 class WitnessGateTest(GateFixture):
+    def test_terminal_fallback_invocation_forms(self) -> None:
+        audit = self.task / "gates.jsonl"
+        audit.write_bytes(b"")
+        before = ((self.task / "status.md").read_bytes(), audit.read_bytes())
+        for configured in (True, False):
+            if not configured:
+                self.config.unlink()
+            for agent in (
+                None,
+                *(
+                    f"task-flow:{r}"
+                    for r in (
+                        "planner",
+                        "implementer",
+                        "checker",
+                        "reviewer",
+                        "backlog",
+                    )
+                ),
+            ):
+                for tool in ("Bash", "PowerShell"):
+                    payload = {
+                        "cwd": str(self.project),
+                        "agent_type": agent,
+                        "tool_name": tool,
+                        "hook_event_name": "PreToolUse",
+                    }
+                    for action in ("approve", "grant"):
+                        for invocation in phase_gate_invocations():
+                            consumer = phase_gate_consumer(invocation, action)
+                            commands = [(consumer, False)]
+                            commands.extend(
+                                (
+                                    consumer + " " + quoted_terminal_option(option, i),
+                                    True,
+                                )
+                                for i, option in enumerate(TERMINAL_OPTIONS)
+                            )
+                            for command, denied in commands:
+                                with self.subTest(
+                                    configured=configured,
+                                    agent=agent,
+                                    tool=tool,
+                                    command=command,
+                                ):
+                                    reason = gate.hook(
+                                        {**payload, "tool_input": {"command": command}},
+                                        home=self.home,
+                                    )
+                                    if denied:
+                                        self.assertIn(
+                                            "authorization issuance", reason or ""
+                                        )
+                                    else:
+                                        self.assertIsNone(reason)
+                                    self.assertEqual(
+                                        (
+                                            (self.task / "status.md").read_bytes(),
+                                            audit.read_bytes(),
+                                        ),
+                                        before,
+                                    )
+                                    self.assertFalse(
+                                        (
+                                            self.project / ".work" / witness.DIRECTORY
+                                        ).exists()
+                                    )
+                    with self.subTest(
+                        configured=configured,
+                        agent=agent,
+                        tool=tool,
+                        ordinary_test=True,
+                    ):
+                        self.assertIsNone(
+                            gate.hook(
+                                {
+                                    **payload,
+                                    "tool_input": {
+                                        "command": "uv run --script plugins/task-flow/tests/test_phase_gate.py"
+                                    },
+                                },
+                                home=self.home,
+                            )
+                        )
+
     def prompt(self, command: str, **changes: object) -> str | None:
         return gate.hook(
             {**PROMPT, "cwd": str(self.project), "prompt": command, **changes},

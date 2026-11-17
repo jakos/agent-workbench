@@ -14,6 +14,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from test_rules import (
+    TERMINAL_OPTIONS,
+    phase_gate_consumer,
+    phase_gate_invocations,
+    quoted_terminal_option,
+)
+
 GUARD = Path(__file__).resolve().parent.parent / "scripts" / "guard.py"
 READ_ONLY_ROLES = ("planner", "reviewer", "backlog")
 ALL_ROLES = ("planner", "implementer", "checker", "reviewer", "backlog")
@@ -48,6 +55,61 @@ def shell(role: str, command: str, tool: str = "Bash") -> str:
 
 
 class GuardTest(unittest.TestCase):
+    def test_terminal_fallback_invocation_forms(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory) / "repository with spaces"
+            task = project / ".work" / "t1"
+            task.mkdir(parents=True)
+            status = task / "status.md"
+            audit = task / "gates.jsonl"
+            status.write_bytes(b"unchanged status\n")
+            audit.write_bytes(b"")
+            before = (status.read_bytes(), audit.read_bytes())
+            for agent in (None, *(f"task-flow:{r}" for r in ALL_ROLES)):
+                for tool in ("Bash", "PowerShell"):
+                    for action in ("approve", "grant"):
+                        for invocation in phase_gate_invocations():
+                            consumer = phase_gate_consumer(invocation, action)
+                            commands = [(consumer, "allow")]
+                            commands.extend(
+                                (
+                                    consumer + " " + quoted_terminal_option(option, i),
+                                    "deny",
+                                )
+                                for i, option in enumerate(TERMINAL_OPTIONS)
+                            )
+                            for command, expected in commands:
+                                with self.subTest(
+                                    agent=agent, tool=tool, command=command
+                                ):
+                                    self.assertEqual(
+                                        decide(
+                                            agent, tool, {"command": command}, project
+                                        ),
+                                        expected,
+                                    )
+                                    self.assertEqual(
+                                        (status.read_bytes(), audit.read_bytes()),
+                                        before,
+                                    )
+                                    self.assertFalse(
+                                        (
+                                            project / ".work" / ".approval-witnesses"
+                                        ).exists()
+                                    )
+                    with self.subTest(agent=agent, tool=tool, ordinary_test=True):
+                        self.assertEqual(
+                            decide(
+                                agent,
+                                tool,
+                                {
+                                    "command": "uv run --script plugins/task-flow/tests/test_phase_gate.py"
+                                },
+                                project,
+                            ),
+                            "allow",
+                        )
+
     def test_witness_protection_runs_before_all_role_returns(self) -> None:
         for agent in (None, "other-agent", *(f"task-flow:{r}" for r in ALL_ROLES)):
             for tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):

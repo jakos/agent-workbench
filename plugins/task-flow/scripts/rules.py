@@ -257,7 +257,10 @@ def witness_command(command: str, cwd: str | Path | None = None) -> str | None:
     ):
         return "model tools must use the validated phase_gate.py consumer CLI"
     if (
-        "phase_gate.py" in cli
+        (
+            "phase_gate.py" in cli
+            or re.search(r"(?<!\S)(?:-m\s*|--module(?:\s+|=))phase_gate(?=\s|$)", cli)
+        )
         # Also deny historical argparse abbreviations; the CLI rejects them now.
         and re.search(r"--(?:t|te|ter|term|termi|termin|termina|terminal)\b", cli)
         or re.search(
