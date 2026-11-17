@@ -75,17 +75,17 @@ timeout_seconds = 1800
 #
 #   role         profile                  model         effort
 #   backlog      codex-backlog            gpt-6-luna    low
-#   planner      codex-plan               gpt-6.1-sol   high (static: one profile per role)
+#   planner      codex-plan               gpt-6-astra   medium (static: one profile per role)
 #   implementer  codex-impl / -impl-high  gpt-6.1-sol   medium, high for large plans (bands)
 #   reviewer     codex-review             gpt-6-astra   medium
 #   checker      script
 
 [profiles.codex-plan]
 driver = "cli"
-model = "gpt-6.1-sol"
+model = "gpt-6-astra"
 billing = "subscription"
-command = ["codex", "exec", "-c", "model_reasoning_effort=high", "--sandbox", "workspace-write", "--json", "--ephemeral", "-m", "gpt-6.1-sol", "-"]
-read_only_command = ["codex", "exec", "-c", "model_reasoning_effort=high", "--sandbox", "read-only", "--json", "--ephemeral", "-m", "gpt-6.1-sol", "-o", "{last_message_file}", "-"]
+command = ["codex", "exec", "-c", "model_reasoning_effort=medium", "--sandbox", "workspace-write", "--json", "--ephemeral", "-m", "gpt-6-astra", "-"]
+read_only_command = ["codex", "exec", "-c", "model_reasoning_effort=medium", "--sandbox", "read-only", "--json", "--ephemeral", "-m", "gpt-6-astra", "-o", "{last_message_file}", "-"]
 usage_format = "codex-jsonl"
 timeout_seconds = 1800
 
