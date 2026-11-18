@@ -7,17 +7,21 @@
 Run: uv run --script plugins/task-flow/tests/test_rules.py
 """
 
+import io
 import json
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 GUARD = SCRIPTS / "guard.py"
 sys.path.insert(0, str(SCRIPTS))
+import guard
 import rules
 
 ALL_ROLES = ("planner", "implementer", "checker", "reviewer", "backlog")
@@ -89,25 +93,144 @@ WRITE_CASES = [
 ]
 
 
+def guard_output(payload: bytes) -> str:
+    """Exercise the real entry point with isolated byte input and text output."""
+    output = io.StringIO()
+    with (
+        io.TextIOWrapper(io.BytesIO(payload), encoding="utf-8") as stdin,
+        patch.object(guard.sys, "stdin", stdin),
+        redirect_stdout(output),
+    ):
+        try:
+            guard.main()
+        except SystemExit as exc:
+            if exc.code != 0:
+                raise AssertionError(f"guard exited {exc.code}") from exc
+    return output.getvalue()
+
+
 def guard_allows(agent_type: str, tool: str, tool_input: dict) -> bool:
-    """Run guard.py as a subprocess and return whether it allows the call."""
+    """Run the real guard in-process; subprocess boundaries have separate smoke tests."""
     payload = {"tool_name": tool, "tool_input": tool_input, "agent_type": agent_type}
-    result = subprocess.run(
-        [sys.executable, str(GUARD)],
-        input=json.dumps(payload),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise AssertionError(f"guard exited {result.returncode}: {result.stderr}")
-    if not result.stdout.strip():
+    output = guard_output(json.dumps(payload).encode("utf-8"))
+    if not output.strip():
         return True
-    decision = json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"]
-    return decision == "allow"
+    return json.loads(output)["hookSpecificOutput"]["permissionDecision"] == "allow"
 
 
 class RulesTest(unittest.TestCase):
+    def test_removed_terminal_fallback_has_no_witness_rule(self) -> None:
+        for command in (
+            "python phase_gate.py approve --source user --terminal",
+            "python phase_gate.py grant --source user --term --ceiling 4",
+            "python -Bm phase_gate approve --source user --terminal",
+            "python -Bm phase_gate grant --source user --terminal --ceiling 4",
+            'git commit -m "phase_gate --terminal fix"',
+            'git commit -m "phase_gate.py --terminal fix"',
+            "uv run --script plugins/task-flow/tests/test_phase_gate.py",
+            "python -m unittest test_phase_gate",
+            "cat plugins/task-flow/scripts/phase_gate.py",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(rules.witness_command(command))
+                for role in rules.ROLES:
+                    if command.startswith("git commit"):
+                        self.assertIsNotNone(rules.check_command(command, role))
+                    else:
+                        self.assertIsNone(rules.check_command(command, role))
+
+    def test_witness_rules_for_every_role_and_normalized_ancestors(self) -> None:
+        for role in rules.ROLES:
+            for path in (
+                ".work/.approval-witnesses/t1.json",
+                ".work/.approval-witnesses/.lock",
+                r"C:\repo\.WORK.\.approval-witnesses\consumed.json",
+                ".work/child/../.approval-witnesses",
+                ".work",
+            ):
+                with self.subTest(role=role, path=path):
+                    self.assertIsNotNone(rules.check_write(path, role, "/repo"))
+            for command in (
+                "rm -rf .work",
+                "mv fake .work/.approval-witnesses",
+                "Remove-Item .work/.approval-witnesses -Recurse",
+                "python phase_gate.py hook",
+                'python "phase_gate.py" "hook"',
+                "py 'phase_gate.py' 'hook'",
+                'python phase_gate.py h"oo"k',
+                'python -m "phase_gate" "hook"',
+                'python -c "from approval_witness import issue"',
+            ):
+                with self.subTest(role=role, command=command):
+                    self.assertIsNotNone(rules.check_command(command, role))
+            self.assertIsNone(
+                rules.check_command(
+                    "python phase_gate.py approve --source user --task-dir .work/t1",
+                    role,
+                )
+            )
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory) / "repository with spaces"
+            (project / ".git").mkdir(parents=True)
+            for command in (
+                f'Remove-Item -Recurse "{project}"',
+                "rm -rf .",
+                "rm -rf .work/*",
+            ):
+                self.assertIsNotNone(rules.witness_command(command, project))
+            self.assertIsNone(rules.witness_command("cat .work/t1/plan.md", project))
+            self.assertIsNone(rules.witness_write("src/a.py", project))
+
+    @unittest.skipUnless(sys.platform == "win32", "8.3 short names exist on Windows")
+    def test_short_name_spelling_of_project_root_is_protected(self) -> None:
+        import ctypes
+
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory) / "repository with spaces"
+            (project / ".git").mkdir(parents=True)
+            buffer = ctypes.create_unicode_buffer(1024)
+            ctypes.windll.kernel32.GetShortPathNameW(str(project), buffer, 1024)
+            for spelling in (str(project), buffer.value or str(project)):
+                with self.subTest(spelling=spelling):
+                    self.assertIsNotNone(
+                        rules.witness_command(
+                            f'Remove-Item -Recurse "{spelling}"', project
+                        )
+                    )
+
+    def test_resolved_witness_descendants_and_siblings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory) / "repository with spaces"
+            (project / ".git").mkdir(parents=True)
+            reserved = project / ".work" / ".approval-witnesses"
+            nested = reserved / "nested"
+            nested.mkdir(parents=True)
+            for cwd in (reserved, nested):
+                for path in (
+                    "t1-approve.json",
+                    "./t1-approve.json",
+                    "../consumed.json",
+                ):
+                    if cwd == reserved and path.startswith("../"):
+                        continue
+                    with self.subTest(cwd=cwd, path=path):
+                        self.assertIsNotNone(rules.witness_write(path, cwd))
+                        for role in rules.ROLES:
+                            self.assertIsNotNone(rules.check_write(path, role, cwd))
+                for command in (
+                    "echo forged > t1-approve.json",
+                    "rm t1-approve.json",
+                    "mv replacement t1-approve.json",
+                    "Set-Content t1-approve.json forged",
+                ):
+                    with self.subTest(cwd=cwd, command=command):
+                        self.assertIsNotNone(rules.witness_command(command, cwd))
+                self.assertIsNone(rules.witness_command("cat t1-approve.json", cwd))
+            self.assertIsNone(rules.witness_write("../ordinary.txt", reserved))
+            self.assertIsNone(
+                rules.witness_write("../.approval-witnesses-other/file.json", reserved)
+            )
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)

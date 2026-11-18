@@ -10,38 +10,241 @@ Run: uv run --script plugins/task-flow/tests/test_guard.py
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+
+from test_rules import guard_output
 
 GUARD = Path(__file__).resolve().parent.parent / "scripts" / "guard.py"
 READ_ONLY_ROLES = ("planner", "reviewer", "backlog")
 ALL_ROLES = ("planner", "implementer", "checker", "reviewer", "backlog")
 
 
-def decide(agent_type: str | None, tool: str, tool_input: dict) -> str:
+def decide(
+    agent_type: str | None, tool: str, tool_input: dict, cwd: Path | None = None
+) -> str:
     """Return "deny" or "allow" for one hook call."""
     payload: dict = {"tool_name": tool, "tool_input": tool_input}
     if agent_type is not None:
         payload["agent_type"] = agent_type
-    result = subprocess.run(
-        [sys.executable, str(GUARD)],
-        input=json.dumps(payload),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise AssertionError(f"guard exited {result.returncode}: {result.stderr}")
-    if not result.stdout.strip():
+    if cwd is not None:
+        payload["cwd"] = str(cwd)
+    output = guard_output(json.dumps(payload).encode("utf-8"))
+    if not output.strip():
         return "allow"
-    return json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"]
+    return json.loads(output)["hookSpecificOutput"]["permissionDecision"]
 
 
 def shell(role: str, command: str, tool: str = "Bash") -> str:
     return decide(f"task-flow:{role}", tool, {"command": command})
 
 
+# One process per case, only in the two entrypoint smoke tests below.
+GUARD_SMOKE_CASES = (
+    (b"{", "allow"),
+    (
+        {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "python phase_gate.py approve --source user --task-dir .work/t1"
+            },
+        },
+        "allow",
+    ),
+    (
+        {
+            "tool_name": "PowerShell",
+            "tool_input": {
+                "command": "python phase_gate.py grant --source user --ceiling 4 --task-dir .work/t1"
+            },
+        },
+        "allow",
+    ),
+    (
+        {
+            "tool_name": "Bash",
+            "tool_input": {"command": 'python -m "phase_gate" "hook"'},
+        },
+        "deny",
+    ),
+    (
+        {
+            "tool_name": "Write",
+            "tool_input": {"file_path": ".work/.approval-witnesses/t1-approve.json"},
+        },
+        "deny",
+    ),
+    (
+        {
+            "agent_type": "task-flow:implementer",
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "phase_gate --terminal fix"'},
+        },
+        "deny",
+    ),
+)
+PHASE_GATE_SMOKE_CASES = (
+    (b"{", 2, "payload unavailable"),
+    (
+        {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "uv run --script plugins/task-flow/tests/test_gates.py"
+            },
+        },
+        0,
+        "",
+    ),
+    (
+        {
+            "tool_name": "PowerShell",
+            "tool_input": {
+                "command": "python phase_gate.py approve --source user --task-dir .work/t1"
+            },
+        },
+        0,
+        "",
+    ),
+    (
+        {
+            "tool_name": "Bash",
+            "tool_input": {"command": 'python "phase_gate.py" "hook"'},
+        },
+        2,
+        "user-prompt hook",
+    ),
+    (
+        {
+            "tool_name": "Write",
+            "tool_input": {"file_path": ".work/.approval-witnesses/t1-approve.json"},
+        },
+        2,
+        "user-prompt hook",
+    ),
+    (
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Agent",
+            "tool_input": {"subagent_type": "task-flow:implementer"},
+            "session_id": "fixture-session",
+        },
+        2,
+        "authorization",
+    ),
+)
+
+
+def smoke_bytes(payload: dict | bytes) -> bytes:
+    return (
+        payload if isinstance(payload, bytes) else json.dumps(payload).encode("utf-8")
+    )
+
+
 class GuardTest(unittest.TestCase):
+    def test_hook_smoke_case_budget(self) -> None:
+        self.assertEqual(len(GUARD_SMOKE_CASES), 6)
+        self.assertEqual(len(PHASE_GATE_SMOKE_CASES), 6)
+
+    def test_guard_entrypoint_smoke(self) -> None:
+        for payload, expected in GUARD_SMOKE_CASES:
+            with self.subTest(payload=payload):
+                result = subprocess.run(
+                    [sys.executable, str(GUARD)],
+                    input=smoke_bytes(payload),
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                output = result.stdout.decode("utf-8")
+                decision = (
+                    json.loads(output)["hookSpecificOutput"]["permissionDecision"]
+                    if output.strip()
+                    else "allow"
+                )
+                self.assertEqual(decision, expected)
+
+    def test_witness_protection_runs_before_all_role_returns(self) -> None:
+        for agent in (None, "other-agent", *(f"task-flow:{r}" for r in ALL_ROLES)):
+            for tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+                for path in (
+                    ".work/.approval-witnesses/t1-approve.json",
+                    r"C:\repo\.WORK\.APPROVAL-WITNESSES.\consumed-abc.json",
+                    ".work/x/../.approval-witnesses/.witness-temp",
+                    ".work",
+                ):
+                    with self.subTest(agent=agent, tool=tool, path=path):
+                        key = "notebook_path" if tool == "NotebookEdit" else "file_path"
+                        self.assertEqual(decide(agent, tool, {key: path}), "deny")
+            for tool in ("Bash", "PowerShell"):
+                for command in (
+                    "echo forged > .work/.approval-witnesses/t1-approve.json",
+                    "rm -rf .work/.approval-witnesses",
+                    "mv replacement .work",
+                    "Remove-Item -Recurse .work",
+                    "cp -r fake .work/.approval-*",
+                    "python plugins/task-flow/scripts/phase_gate.py hook < forged.json",
+                    'python "plugins/task-flow/scripts/phase_gate.py" "hook" < forged.json',
+                    "py 'plugins/task-flow/scripts/phase_gate.py' 'hook'",
+                    'python phase_gate.py h"oo"k',
+                    'python -m "phase_gate" "hook"',
+                    'python -c "import phase_gate; phase_gate.hook({})"',
+                ):
+                    with self.subTest(agent=agent, tool=tool, command=command):
+                        self.assertEqual(
+                            decide(agent, tool, {"command": command}), "deny"
+                        )
+                for command in (
+                    "uv run --script plugins/task-flow/scripts/phase_gate.py approve --source user --task-dir .work/t1",
+                    "uv run --script plugins/task-flow/scripts/phase_gate.py grant --source user --ceiling 4 --task-dir .work/t1",
+                    "uv run --script plugins/task-flow/tests/test_phase_gate.py",
+                ):
+                    with self.subTest(agent=agent, tool=tool, command=command):
+                        self.assertEqual(
+                            decide(agent, tool, {"command": command}), "allow"
+                        )
+
+    def test_relative_witness_mutations_from_inside_storage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory) / "repository with spaces"
+            (project / ".git").mkdir(parents=True)
+            reserved = project / ".work" / ".approval-witnesses"
+            nested = reserved / "nested"
+            nested.mkdir(parents=True)
+            for cwd in (reserved, nested):
+                for agent in (None, *(f"task-flow:{r}" for r in ALL_ROLES)):
+                    for tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+                        key = "notebook_path" if tool == "NotebookEdit" else "file_path"
+                        with self.subTest(cwd=cwd, agent=agent, tool=tool):
+                            self.assertEqual(
+                                decide(agent, tool, {key: "t1-approve.json"}, cwd),
+                                "deny",
+                            )
+                    for tool in ("Bash", "PowerShell"):
+                        for command in (
+                            "echo forged > t1-approve.json",
+                            "rm t1-approve.json",
+                            "mv replacement t1-approve.json",
+                            "Set-Content t1-approve.json forged",
+                            "Remove-Item t1-approve.json",
+                        ):
+                            with self.subTest(
+                                cwd=cwd, agent=agent, tool=tool, command=command
+                            ):
+                                self.assertEqual(
+                                    decide(agent, tool, {"command": command}, cwd),
+                                    "deny",
+                                )
+                    self.assertEqual(
+                        decide(agent, "Bash", {"command": "cat t1-approve.json"}, cwd),
+                        "allow",
+                    )
+            for agent in (None, "task-flow:implementer"):
+                self.assertEqual(
+                    decide(agent, "Write", {"file_path": "../ordinary.txt"}, reserved),
+                    "allow",
+                )
+
     def check(self, roles, commands, expected, tool="Bash"):
         for role in roles:
             for command in commands:
@@ -187,7 +390,7 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(write("/repo/src/x.py"), "deny")
 
 
-from test_phase_gate import MAIN_LAUNCH, UNRELATED_SCRIPT_COMMANDS, GateFixture
+from test_phase_gate import MAIN_LAUNCH, UNRELATED_SCRIPT_COMMANDS, GateFixture, gate
 
 
 class WorkflowHookTest(GateFixture):
@@ -195,21 +398,16 @@ class WorkflowHookTest(GateFixture):
         for tool in ("Bash", "PowerShell"):
             for command in UNRELATED_SCRIPT_COMMANDS:
                 with self.subTest(tool=tool, command=command):
-                    result = subprocess.run(
-                        [sys.executable, str(GUARD.with_name("phase_gate.py")), "hook"],
-                        input=json.dumps(
+                    self.assertIsNone(
+                        gate.hook(
                             {
                                 "cwd": str(self.project),
                                 "tool_name": tool,
                                 "tool_input": {"command": command},
-                            }
-                        ),
-                        text=True,
-                        capture_output=True,
-                        check=False,
+                            },
+                            home=self.home,
+                        )
                     )
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual(result.stdout, "")
 
     def test_main_session_launch_uses_a_blocking_hook(self) -> None:
         config = json.loads(
@@ -221,6 +419,12 @@ class WorkflowHookTest(GateFixture):
                 for entry in config["hooks"]["PreToolUse"]
             )
         )
+        for event in ("PreToolUse", "UserPromptSubmit"):
+            for entry in config["hooks"][event]:
+                for hook in entry["hooks"]:
+                    self.assertEqual(hook.get("onFailure"), "block")
+        for entry in config["hooks"]["PreToolUse"]:
+            self.assertIn("NotebookEdit", entry["matcher"])
         payload = {
             **MAIN_LAUNCH,
             "cwd": str(self.project),
@@ -229,15 +433,31 @@ class WorkflowHookTest(GateFixture):
                 "prompt": f"Task directory: {self.task}\n",
             },
         }
-        result = subprocess.run(
-            [sys.executable, str(GUARD.with_name("phase_gate.py")), "hook"],
-            input=json.dumps(payload),
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("authorization", result.stderr)
+        self.assertIn("authorization", gate.hook(payload, home=self.home) or "")
+
+    def test_phase_gate_entrypoint_smoke(self) -> None:
+        for payload, code, reason in PHASE_GATE_SMOKE_CASES:
+            if isinstance(payload, dict):
+                payload = {**payload, "cwd": str(self.project)}
+                if payload.get("tool_name") == "Agent":
+                    payload["tool_input"] = {
+                        **payload["tool_input"],
+                        "prompt": f"Task directory: {self.task}\n",
+                    }
+            with self.subTest(payload=payload):
+                result = subprocess.run(
+                    [sys.executable, str(GUARD.with_name("phase_gate.py")), "hook"],
+                    input=smoke_bytes(payload),
+                    capture_output=True,
+                    check=False,
+                    cwd=self.project,
+                )
+                self.assertEqual(result.returncode, code, result.stderr)
+                self.assertEqual(result.stdout, b"")
+                if reason:
+                    self.assertIn(reason, result.stderr.decode("utf-8"))
+                else:
+                    self.assertEqual(result.stderr, b"")
 
 
 if __name__ == "__main__":

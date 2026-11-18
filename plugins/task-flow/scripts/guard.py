@@ -5,8 +5,8 @@
 
 Plugin agent frontmatter cannot restrict Write to a directory, and prompts are advice,
 not limits. This hook reads `agent_type`, which Claude Code adds to hook input for calls
-made inside a subagent, and applies the rules below only to task-flow's own agents.
-Calls from the main session and from any other agent pass through untouched.
+made inside a subagent. Witness issuance and storage protections run for every
+session before role selection; the remaining rules apply to task-flow's own agents.
 
 The rules themselves live in `scripts/rules.py` (`check_command`, `check_write`), shared
 with `scripts/implement.py`, so this hook and the external implementer are held to the
@@ -26,7 +26,7 @@ import json
 import re
 import sys
 
-from rules import check_command, check_write
+from rules import check_command, check_write, witness_command, witness_write
 
 ROLE = re.compile(r"^task-flow[:_](planner|implementer|checker|reviewer|backlog)$")
 
@@ -54,12 +54,25 @@ def main() -> None:
         payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     except ValueError:
         return
+    tool = payload.get("tool_name")
+    tool_input = payload.get("tool_input") or {}
+    if tool in WRITE_TOOLS:
+        reason = witness_write(
+            str(tool_input.get("file_path") or tool_input.get("notebook_path") or ""),
+            payload.get("cwd"),
+        )
+        if reason:
+            deny(reason)
+    if tool in SHELL_TOOLS:
+        reason = witness_command(
+            str(tool_input.get("command") or ""), payload.get("cwd")
+        )
+        if reason:
+            deny(reason)
     match = ROLE.match(str(payload.get("agent_type") or ""))
     if not match:
         return
     role = match.group(1)
-    tool = payload.get("tool_name")
-    tool_input = payload.get("tool_input") or {}
 
     if tool in WRITE_TOOLS:
         path = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")

@@ -10,6 +10,14 @@ procedure; this command only says which part to run.
 
 Follow **Phase: plan** for task `$ARGUMENTS`, including the approval gate. Never record approval the user did not give.
 
+When policy requires human approval, present the plan and have the user type
+`/task-flow:task-approve <task-id>`. Its real prompt hook issues evidence for the
+current plan and attempt, valid for five minutes and one use. Follow task-approve
+to consume it. Changed plans and expiry require a fresh user command.
+If the prompt hook is unavailable, there is no human approval or grant fallback.
+Existing `--auto`/policy approval may proceed only where policy permits; it never
+grants extra rounds or bypasses stop rules.
+
 - `--planner <profile>` plans with that profile for this invocation only, instead of the
   configured `[roles] planner`; it must name an enabled configured profile of
   models.toml — never a free-form model or command (see **Phase: plan** step 0).

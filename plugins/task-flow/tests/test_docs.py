@@ -107,6 +107,66 @@ def heading_anchors(text: str) -> set[str]:
 
 
 class DocumentationTest(unittest.TestCase):
+    def test_session_authorization_skills_and_navigation(self) -> None:
+        plugin = ROOT / "plugins" / "task-flow"
+        for name in ("task-approve", "task-grant"):
+            text = (plugin / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
+            frontmatter = text.split("---", 2)[1]
+            self.assertIn(f"name: {name}\n", frontmatter)
+            self.assertIn("disable-model-invocation: true", frontmatter)
+            for required in (
+                "--source user",
+                "--task-dir",
+                "five minutes",
+                "attempt",
+                "single-use",
+                "current plan",
+            ):
+                self.assertIn(required, text)
+            self.assertIn(
+                f"/task-flow:{name} <task-id>",
+                (plugin / "README.md").read_text(encoding="utf-8"),
+            )
+        orchestration = (plugin / "skills/workflow/orchestration.md").read_text(
+            encoding="utf-8"
+        )
+        for required in (
+            "Three-platform Claude authorization smoke check",
+            "Windows, macOS and Linux",
+            ".work/.approval-witnesses/",
+            "status replacement",
+            "consumed nonce",
+            "user-prompt",
+            "no progress",
+            "circuit",
+        ):
+            self.assertIn(required, orchestration)
+        self.assertNotIn("The prompt hook captures task context only", orchestration)
+        for relative in (
+            "README.md",
+            "skills/task-approve/SKILL.md",
+            "skills/task-grant/SKILL.md",
+            "skills/task-plan/SKILL.md",
+            "skills/task-run/SKILL.md",
+            "skills/workflow/SKILL.md",
+            "skills/workflow/orchestration.md",
+        ):
+            with self.subTest(page=relative):
+                guidance = (plugin / relative).read_text(encoding="utf-8")
+                self.assertNotIn("--terminal", guidance)
+                self.assertIn("prompt hook is unavailable", guidance)
+                self.assertIn("no human approval or grant fallback", guidance)
+                self.assertIn("only where policy permits", guidance)
+                self.assertIn(
+                    "never\ngrants extra rounds or bypasses stop rules", guidance
+                )
+        self.assertIn(
+            "Historical `terminal` authorization audit records remain readable",
+            orchestration,
+        )
+        self.assertIn("outside automated\nacceptance", orchestration)
+        self.assertIn("recover --source user --task-dir", orchestration)
+
     def assert_readme(self, root: Path) -> None:
         text = (root / "README.md").read_text(encoding="utf-8")
         self.assertLessEqual(len(text.splitlines()), 100)

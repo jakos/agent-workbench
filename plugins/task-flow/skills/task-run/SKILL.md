@@ -25,4 +25,11 @@ When configured, follow **Enforced transitions when policy is configured**:
 plan-bound approval, complete baseline evidence before either implementer route and
 include `Task directory: <absolute-task-dir>` in Claude launch prompts. Never infer
 human approval from an automatic prompt turn. Failed external invocations resume in
-the same round; only an explicit separate-terminal human grant permits extra rounds.
+the same round. The user can authorize the current plan with
+`/task-flow:task-approve <task-id>` and grant a finite maximum round with
+`/task-flow:task-grant <task-id> <ceiling>`. Consume the real hook's evidence within
+five minutes using the corresponding skill. Changed plans, attempts, expiry and
+replay require a fresh user command. A grant cannot bypass no progress or circuit breakers.
+If the prompt hook is unavailable, there is no human approval or grant fallback.
+Existing `--auto`/policy approval may proceed only where policy permits; it never
+grants extra rounds or bypasses stop rules.
