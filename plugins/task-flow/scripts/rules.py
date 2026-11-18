@@ -227,10 +227,20 @@ def witness_write(path: str, cwd: str | Path | None = None) -> str | None:
         if not posixpath.isabs(absolute) and not re.match(r"^[a-z]:/", absolute):
             absolute = posixpath.normpath(_normalized_path(str(here)) + "/" + absolute)
         reserved = root + "/.work/.approval-witnesses"
-        protected |= (
-            reserved == absolute
-            or reserved.startswith(absolute.rstrip("/") + "/")
-            or absolute.startswith(reserved + "/")
+        candidates = [absolute]
+        try:
+            # A Windows short (8.3) spelling such as RUNNER~1 names the same directory
+            # as the resolved project root; compare the resolved spelling as well.
+            resolved = _normalized_path(str((here / path).resolve()))
+        except (OSError, ValueError):
+            resolved = absolute
+        if resolved != absolute:
+            candidates.append(resolved)
+        protected |= any(
+            reserved == candidate
+            or reserved.startswith(candidate.rstrip("/") + "/")
+            or candidate.startswith(reserved + "/")
+            for candidate in candidates
         )
     return (
         "authorization witnesses are written only by the real user-prompt hook"

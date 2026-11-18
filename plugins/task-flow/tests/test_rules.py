@@ -181,6 +181,23 @@ class RulesTest(unittest.TestCase):
             self.assertIsNone(rules.witness_command("cat .work/t1/plan.md", project))
             self.assertIsNone(rules.witness_write("src/a.py", project))
 
+    @unittest.skipUnless(sys.platform == "win32", "8.3 short names exist on Windows")
+    def test_short_name_spelling_of_project_root_is_protected(self) -> None:
+        import ctypes
+
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory) / "repository with spaces"
+            (project / ".git").mkdir(parents=True)
+            buffer = ctypes.create_unicode_buffer(1024)
+            ctypes.windll.kernel32.GetShortPathNameW(str(project), buffer, 1024)
+            for spelling in (str(project), buffer.value or str(project)):
+                with self.subTest(spelling=spelling):
+                    self.assertIsNotNone(
+                        rules.witness_command(
+                            f'Remove-Item -Recurse "{spelling}"', project
+                        )
+                    )
+
     def test_resolved_witness_descendants_and_siblings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory) / "repository with spaces"
