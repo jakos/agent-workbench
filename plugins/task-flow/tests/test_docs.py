@@ -117,7 +117,6 @@ class DocumentationTest(unittest.TestCase):
             for required in (
                 "--source user",
                 "--task-dir",
-                "--terminal",
                 "five minutes",
                 "attempt",
                 "single-use",
@@ -137,13 +136,36 @@ class DocumentationTest(unittest.TestCase):
             ".work/.approval-witnesses/",
             "status replacement",
             "consumed nonce",
-            "--terminal",
             "user-prompt",
             "no progress",
             "circuit",
         ):
             self.assertIn(required, orchestration)
         self.assertNotIn("The prompt hook captures task context only", orchestration)
+        for relative in (
+            "README.md",
+            "skills/task-approve/SKILL.md",
+            "skills/task-grant/SKILL.md",
+            "skills/task-plan/SKILL.md",
+            "skills/task-run/SKILL.md",
+            "skills/workflow/SKILL.md",
+            "skills/workflow/orchestration.md",
+        ):
+            with self.subTest(page=relative):
+                guidance = (plugin / relative).read_text(encoding="utf-8")
+                self.assertNotIn("--terminal", guidance)
+                self.assertIn("prompt hook is unavailable", guidance)
+                self.assertIn("no human approval or grant fallback", guidance)
+                self.assertIn("only where policy permits", guidance)
+                self.assertIn(
+                    "never\ngrants extra rounds or bypasses stop rules", guidance
+                )
+        self.assertIn(
+            "Historical `terminal` authorization audit records remain readable",
+            orchestration,
+        )
+        self.assertIn("outside automated\nacceptance", orchestration)
+        self.assertIn("recover --source user --task-dir", orchestration)
 
     def assert_readme(self, root: Path) -> None:
         text = (root / "README.md").read_text(encoding="utf-8")

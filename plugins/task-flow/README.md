@@ -21,7 +21,8 @@ expires after five minutes and is single-use. A changed plan, expiry or replay
 requires a fresh user command. Invoking skill instructions creates no authority.
 Grants cannot bypass no progress or circuit breakers.
 
-Both actions retain an explicit `--terminal` fallback through `phase_gate.py`
-in a separate interactive terminal; see the
-[authorization procedure](skills/workflow/orchestration.md#enforced-transitions-when-policy-is-configured)
+If the prompt hook is unavailable, there is no human approval or grant fallback.
+Existing `--auto`/policy approval may proceed only where policy permits; it never
+grants extra rounds or bypasses stop rules.
+See the [authorization procedure](skills/workflow/orchestration.md#enforced-transitions-when-policy-is-configured)
 for full commands and recovery. Bare consumer calls never issue authorization.

@@ -7,61 +7,25 @@
 Run: uv run --script plugins/task-flow/tests/test_rules.py
 """
 
+import io
 import json
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 GUARD = SCRIPTS / "guard.py"
 sys.path.insert(0, str(SCRIPTS))
+import guard
 import rules
 
 ALL_ROLES = ("planner", "implementer", "checker", "reviewer", "backlog")
 READ_ONLY_ROLES = ("planner", "reviewer", "backlog")
-
-TERMINAL_OPTIONS = tuple("--" + "terminal"[:n] for n in range(1, 9))
-
-
-def phase_gate_invocations() -> tuple[str, ...]:
-    """Portable shell text, shared with hook tests; never executed as commands."""
-    return (
-        "python -m phase_gate",
-        "python -mphase_gate",
-        "python3 -m phase_gate",
-        "python3 -mphase_gate",
-        "py -3 -m phase_gate",
-        "py.exe -3.14 -mphase_gate",
-        'python "-m" "phase_gate"',
-        "python '-mphase_gate'",
-        'python -m ph"ase_"gate',
-        'uv run python -m "phase_gate"',
-        "uv run -mphase_gate",
-        "uv run --module phase_gate",
-        "python plugins/task-flow/scripts/phase_gate.py",
-        r"python3 plugins\task-flow\scripts\phase_gate.py",
-        'py.exe -3 "C:\\repository with spaces\\scripts\\phase_gate.py"',
-        "python '/repository with spaces/scripts/phase_gate.py'",
-        'python scripts/phase_"gate".py',
-        'uv run --script "plugins/task-flow/scripts/phase_gate.py"',
-        r"uv run --script 'C:\repository with spaces\scripts\phase_gate.py'",
-        "uv run python plugins/task-flow/scripts/phase_gate.py",
-    )
-
-
-def phase_gate_consumer(invocation: str, action: str) -> str:
-    """Supply a finite ceiling and explicit task context without issuing evidence."""
-    ceiling = " --ceiling 4" if action == "grant" else ""
-    return f'{invocation} {action} --source user --task-dir ".work/t1"{ceiling}'
-
-
-def quoted_terminal_option(option: str, index: int) -> str:
-    """Exercise plain, single, double and adjacent quoted argument spellings."""
-    return (option, f"'{option}'", f'"{option}"', f'--"{option[2:]}"')[index % 4]
-
 
 # Every shell command used in test_guard.py, with the tool it is run through there.
 SHELL_CASES = [
@@ -129,48 +93,51 @@ WRITE_CASES = [
 ]
 
 
+def guard_output(payload: bytes) -> str:
+    """Exercise the real entry point with isolated byte input and text output."""
+    output = io.StringIO()
+    with (
+        io.TextIOWrapper(io.BytesIO(payload), encoding="utf-8") as stdin,
+        patch.object(guard.sys, "stdin", stdin),
+        redirect_stdout(output),
+    ):
+        try:
+            guard.main()
+        except SystemExit as exc:
+            if exc.code != 0:
+                raise AssertionError(f"guard exited {exc.code}") from exc
+    return output.getvalue()
+
+
 def guard_allows(agent_type: str, tool: str, tool_input: dict) -> bool:
-    """Run guard.py as a subprocess and return whether it allows the call."""
+    """Run the real guard in-process; subprocess boundaries have separate smoke tests."""
     payload = {"tool_name": tool, "tool_input": tool_input, "agent_type": agent_type}
-    result = subprocess.run(
-        [sys.executable, str(GUARD)],
-        input=json.dumps(payload),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise AssertionError(f"guard exited {result.returncode}: {result.stderr}")
-    if not result.stdout.strip():
+    output = guard_output(json.dumps(payload).encode("utf-8"))
+    if not output.strip():
         return True
-    decision = json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"]
-    return decision == "allow"
+    return json.loads(output)["hookSpecificOutput"]["permissionDecision"] == "allow"
 
 
 class RulesTest(unittest.TestCase):
-    def test_terminal_fallback_invocation_forms(self) -> None:
-        for action in ("approve", "grant"):
-            for invocation in phase_gate_invocations():
-                consumer = phase_gate_consumer(invocation, action)
-                with self.subTest(consumer=consumer):
-                    self.assertIsNone(rules.witness_command(consumer))
-                    for role in rules.ROLES:
-                        self.assertIsNone(rules.check_command(consumer, role))
-                for option in TERMINAL_OPTIONS:
-                    for index in range(4):
-                        command = consumer + " " + quoted_terminal_option(option, index)
-                        with self.subTest(command=command):
-                            self.assertIsNotNone(rules.witness_command(command))
-                            for role in rules.ROLES:
-                                self.assertIsNotNone(rules.check_command(command, role))
+    def test_removed_terminal_fallback_has_no_witness_rule(self) -> None:
         for command in (
+            "python phase_gate.py approve --source user --terminal",
+            "python phase_gate.py grant --source user --term --ceiling 4",
+            "python -Bm phase_gate approve --source user --terminal",
+            "python -Bm phase_gate grant --source user --terminal --ceiling 4",
+            'git commit -m "phase_gate --terminal fix"',
+            'git commit -m "phase_gate.py --terminal fix"',
             "uv run --script plugins/task-flow/tests/test_phase_gate.py",
             "python -m unittest test_phase_gate",
             "cat plugins/task-flow/scripts/phase_gate.py",
         ):
-            self.assertIsNone(rules.witness_command(command))
-            for role in rules.ROLES:
-                self.assertIsNone(rules.check_command(command, role))
+            with self.subTest(command=command):
+                self.assertIsNone(rules.witness_command(command))
+                for role in rules.ROLES:
+                    if command.startswith("git commit"):
+                        self.assertIsNotNone(rules.check_command(command, role))
+                    else:
+                        self.assertIsNone(rules.check_command(command, role))
 
     def test_witness_rules_for_every_role_and_normalized_ancestors(self) -> None:
         for role in rules.ROLES:
@@ -192,10 +159,6 @@ class RulesTest(unittest.TestCase):
                 "py 'phase_gate.py' 'hook'",
                 'python phase_gate.py h"oo"k',
                 'python -m "phase_gate" "hook"',
-                "py phase_gate.py approve --terminal",
-                'py phase_gate.py approve "--terminal"',
-                "py phase_gate.py approve --term",
-                "py phase_gate.py grant --term --ceiling 4",
                 'python -c "from approval_witness import issue"',
             ):
                 with self.subTest(role=role, command=command):

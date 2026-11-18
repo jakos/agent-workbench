@@ -314,8 +314,10 @@ limit with `/task-flow:task-grant <task-id> <ceiling>`. The real UserPromptSubmi
 issues action-bound, single-use evidence valid for five minutes. The corresponding
 skills consume it through `phase_gate.py` with `approve` or `grant` and `--source user`; their
 instructions and bare consumer calls create no authority. Changed plans or attempts,
-expiry and replay require a fresh user command. Explicit `--terminal` fallback for
-each action requires a separate interactive terminal and digest/attempt confirmation.
+expiry and replay require a fresh user command.
+If the prompt hook is unavailable, there is no human approval or grant fallback.
+Existing `--auto`/policy approval may proceed only where policy permits; it never
+grants extra rounds or bypasses stop rules.
 See orchestration → Policy for full commands and partial-write recovery.
 Repository-root `.work/.approval-witnesses/`, including temporary, lock and consumed
 files, is reserved for trusted authorization code; model tools must never mutate it.

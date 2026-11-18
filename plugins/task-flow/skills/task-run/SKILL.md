@@ -29,6 +29,7 @@ the same round. The user can authorize the current plan with
 `/task-flow:task-approve <task-id>` and grant a finite maximum round with
 `/task-flow:task-grant <task-id> <ceiling>`. Consume the real hook's evidence within
 five minutes using the corresponding skill. Changed plans, attempts, expiry and
-replay require a fresh user command. The explicit `--terminal` fallback for both
-actions is user-only in a separate interactive terminal. A grant cannot bypass
-no progress or circuit breakers.
+replay require a fresh user command. A grant cannot bypass no progress or circuit breakers.
+If the prompt hook is unavailable, there is no human approval or grant fallback.
+Existing `--auto`/policy approval may proceed only where policy permits; it never
+grants extra rounds or bypasses stop rules.

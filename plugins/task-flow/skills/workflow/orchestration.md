@@ -73,8 +73,10 @@ command. Existing automatic policy decisions and legacy Start behavior are uncha
 
 Evidence is single-use, expires after five minutes, and binds canonical repository,
 task, plan digest, resolved attempt and action. Grants also bind their exact ceiling.
-It records the issuing session; the audit records only the channel (`user-prompt`
-or `terminal`) and an irreversible reference, never the prompt or reusable nonce.
+It requires a nonempty issuing session; the audit records only the `user-prompt`
+channel and an irreversible reference, never the prompt or reusable nonce.
+Historical `terminal` authorization audit records remain readable with their existing
+meaning; terminal-channel witness files cannot authorize new approvals or grants.
 The entire repository-root `.work/.approval-witnesses/` directory is reserved,
 including temporary and consumed files. Never create, edit, replace or delete it
 through model tools. Main-session and agent guards run before role-specific returns.
@@ -83,16 +85,15 @@ enabled; it is not a sandbox against arbitrary adversarial code execution.
 
 After expiry, a changed plan/attempt, replay, or missing evidence, report the refusal
 and have the user review the current plan and repeat the exact command. Do not call
-the issuance hook yourself. Explicit fallback for the user in a separate interactive
-terminal:
-`uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/phase_gate.py" approve --source user --terminal --task-dir <absolute-task-dir>`.
-The terminal must have interactive stdin and stdout; confirm the displayed plan
-digest, attempt, action and ceiling. Bare consumers never start a challenge.
+the issuance hook yourself. Bare consumers never issue evidence or start a challenge.
+If the prompt hook is unavailable, there is no human approval or grant fallback.
+Existing `--auto`/policy approval may proceed only where policy permits; it never
+grants extra rounds or bypasses stop rules.
 
 Evidence is consumed before audit append and status publication. Storage or audit
 failure refuses authorization. If the audit append succeeds but status replacement
 fails, keep the consumed nonce consumed, fix the filesystem problem, and have the
-user issue a fresh approval command (or repeat the explicit terminal fallback).
+user issue a fresh approval command.
 Retry approval to publish status; do not manually copy audit fields into status or
 restore consumed evidence. An interrupted audit tail still requires the separate
 `recover --source user --task-dir <absolute-task-dir>` terminal procedure; recovery
@@ -132,14 +133,13 @@ For authorized extra rounds, the user types exactly
 `/task-flow:task-grant <task-id> <ceiling>`. The ceiling is a finite integer maximum
 round number above the current limit, not a count of extra rounds. Consume with
 `uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/phase_gate.py" grant --source user --ceiling <ceiling> --task-dir <absolute-task-dir>`.
-Explicit user-only fallback in a separate interactive terminal:
-`uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/phase_gate.py" grant --source user --terminal --ceiling <ceiling> --task-dir <absolute-task-dir>`.
 A grant is bound to this plan and resolved attempt, permits only that ceiling,
 and cannot bypass no progress or a circuit
 breaker. An escalated round-cap task can then transition to implementing; never reset
 the attempt or silently raise limits.
 
-**Three-platform Claude authorization smoke check:** in real Claude sessions on
+**Three-platform Claude authorization smoke check:** optional and outside automated
+acceptance. In real Claude sessions on
 Windows, macOS and Linux with hooks enabled and supervised policy, create a planned
 round-zero task. Record OS/runtime, exact command, observed transition and refusal
 evidence for: `/task-flow:task-approve <task-id>` once (approved, user source),

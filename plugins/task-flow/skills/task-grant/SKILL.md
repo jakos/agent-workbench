@@ -21,11 +21,12 @@ uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/phase_gate.py" grant --source use
 
 Report the result. A changed plan or attempt, expiry, a different ceiling, or replay
 refuses. The user must review the current plan and type the command again. Never
-write evidence, invoke the issuance hook, or use `--terminal` through model tools.
+write evidence or invoke the issuance hook through model tools.
 Grants do not bypass no progress or circuit breakers and do not reset the attempt.
 Resume a round-cap escalation with the ordinary implementing transition.
 
-Explicit fallback: the user runs the same command with `--terminal` in a separate
-interactive terminal and confirms the displayed digest, attempt, action and ceiling.
+If the prompt hook is unavailable, there is no human approval or grant fallback.
+Existing `--auto`/policy approval may proceed only where policy permits; it never
+grants extra rounds or bypasses stop rules.
 Bare consumer calls never issue evidence or open a challenge. With no policy
 configuration the existing legacy round procedure still applies.

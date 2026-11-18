@@ -14,7 +14,7 @@ ValueError.
 
 Rules per role:
 
-- every session and role: no model-side witness issuance, terminal fallback, or
+- every session and role: no model-side witness issuance or
   mutation of repository-root .work/.approval-witnesses/ and its ancestors. The
   guard applies these checks before selecting a role. Bare consumer CLIs are allowed.
 
@@ -233,7 +233,7 @@ def witness_write(path: str, cwd: str | Path | None = None) -> str | None:
             or absolute.startswith(reserved + "/")
         )
     return (
-        "authorization witnesses are written only by the user-prompt hook or explicit terminal path"
+        "authorization witnesses are written only by the real user-prompt hook"
         if protected
         else None
     )
@@ -256,22 +256,13 @@ def witness_command(command: str, cwd: str | Path | None = None) -> str | None:
         cli,
     ):
         return "model tools must use the validated phase_gate.py consumer CLI"
-    if (
-        (
-            "phase_gate.py" in cli
-            or re.search(r"(?<!\S)(?:-m\s*|--module(?:\s+|=))phase_gate(?=\s|$)", cli)
-        )
-        # Also deny historical argparse abbreviations; the CLI rejects them now.
-        and re.search(r"--(?:t|te|ter|term|termi|termin|termina|terminal)\b", cli)
-        or re.search(
-            r"\b(?:authorization_request|approval_witness\.issue)\s*\(", lowered
-        )
-        or re.search(
-            r"\b(?:from\s+approval_witness\s+import|import\s+approval_witness)\b",
-            lowered,
-        )
+    if re.search(
+        r"\b(?:authorization_request|approval_witness\.issue)\s*\(", lowered
+    ) or re.search(
+        r"\b(?:from\s+approval_witness\s+import|import\s+approval_witness)\b",
+        lowered,
     ):
-        return "authorization issuance requires a real user prompt or a separate interactive terminal"
+        return "authorization issuance requires the real user-prompt hook"
     mutates = re.search(
         r"\b(?:rm|rmdir|rd|del|erase|mv|move|cp|copy|rename|ren|mkdir|touch|tee|"
         r"remove-item|move-item|copy-item|rename-item|new-item|set-content|add-content|"

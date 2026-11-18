@@ -19,11 +19,12 @@ uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/phase_gate.py" approve --source u
 ```
 
 Report the result. A changed plan or attempt, expiry, or replay refuses. Ask the user
-to review the current plan and type the command again; never manufacture evidence,
-invoke the issuance hook, or add `--terminal` through model tools. A successful
+to review the current plan and type the command again; never manufacture evidence
+or invoke the issuance hook through model tools. A successful
 approval records `plan-approved: yes (user, <date>)` at approved round zero.
 
-Explicit fallback: the user runs the same command with `--terminal` in a separate
-interactive terminal and types the displayed digest, attempt, action and ceiling
-challenge. Bare consumer calls never issue evidence or open a challenge.
+If the prompt hook is unavailable, there is no human approval or grant fallback.
+Existing `--auto`/policy approval may proceed only where policy permits; it never
+grants extra rounds or bypasses stop rules.
+Bare consumer calls never issue evidence or open a challenge.
 With no policy configuration the existing legacy approval procedure still applies.

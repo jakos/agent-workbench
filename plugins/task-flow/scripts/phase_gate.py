@@ -732,13 +732,10 @@ def authorization_request(
     action: str,
     ceiling: int,
     *,
-    channel: str,
-    session: str | None,
+    session: str,
     home: Path | None = None,
-    approved_digest: str | None = None,
-    approved_attempt: str | None = None,
 ) -> None:
-    """Issue only through the real prompt hook or explicit interactive CLI path."""
+    """Issue only through the real user-prompt hook."""
     task = task.resolve()
     if task.parent.name != ".work" or not task.is_dir():
         raise Refusal("task must be an existing ordinary .work directory")
@@ -754,10 +751,6 @@ def authorization_request(
         entries = log_entries(task)
         token = digest(plan.encode("utf-8"))
         identity = resolved_attempt(text, state, task, entries)
-        if approved_digest is not None and token != approved_digest:
-            raise Refusal("plan changed during human authorization")
-        if approved_attempt is not None and identity != approved_attempt:
-            raise Refusal("task attempt changed during human authorization")
         limit = max(
             [
                 loaded["values"]["max_rounds"],
@@ -782,7 +775,13 @@ def authorization_request(
         elif action != "grant" or type(ceiling) is not int or ceiling <= limit:
             raise Refusal("grant needs a finite ceiling above the current limit")
         approval_witness.issue(
-            task, action, token, identity, ceiling, channel=channel, session=session
+            task,
+            action,
+            token,
+            identity,
+            ceiling,
+            channel="user-prompt",
+            session=session,
         )
 
 
@@ -793,11 +792,8 @@ def decide(
     number: int | None = None,
     target: str | None = None,
     source: str = "policy",
-    human: bool = False,
     ceiling: int = 0,
     home: Path | None = None,
-    approved_digest: str | None = None,
-    approved_attempt: str | None = None,
     worktree: str | None = None,
     message: str | None = None,
     base: str | None = None,
@@ -842,15 +838,8 @@ def decide(
                     entries,
                     pending_base=base if action == "rebase" else None,
                 )
-                if (
-                    approved_attempt is not None
-                    and approved_attempt != event["attempt"]
-                ):
-                    raise Refusal("task attempt changed during human authorization")
                 plan = read(task / "plan.md")
                 event["plan"] = digest(plan.encode("utf-8"))
-                if approved_digest is not None and approved_digest != event["plan"]:
-                    raise Refusal("plan changed during human authorization")
                 validated = role_contracts.validate_plan(plan)
                 if not validated.ok or validated.blocked:
                     raise Refusal("invalid or blocked plan")
@@ -1282,7 +1271,6 @@ def hook(payload: dict, *, home: Path | None = None) -> str | None:
                 project / ".work" / task_id,
                 action,
                 int(raw_ceiling) if raw_ceiling else 0,
-                channel="user-prompt",
                 session=session,
                 home=home,
             )
@@ -1413,7 +1401,6 @@ def main(argv: list[str] | None = None) -> int:
         "--source", choices=("user", "policy", "--auto"), default="policy"
     )
     parser.add_argument("--ceiling", type=int, default=0)
-    parser.add_argument("--terminal", action="store_true")
     parser.add_argument("--base")
     parser.add_argument("--worktree")
     parser.add_argument("--message")
@@ -1423,40 +1410,20 @@ def main(argv: list[str] | None = None) -> int:
             initialize(args.task_dir, args.base or "")
             print("initialized unapproved task")
             return 0
-        if args.terminal and (
-            args.source != "user" or args.action not in ("approve", "grant")
-        ):
-            raise Refusal("--terminal requires approve or grant --source user")
-        human = args.source == "user" and (args.terminal or args.action == "recover")
-        approved_digest, approved_attempt = (
+        human = args.source == "user" and args.action == "recover"
+        if human:
             human_confirmation(args.task_dir, args.action, args.ceiling)
-            if human
-            else (None, None)
-        )
         if args.action == "recover":
             recover(args.task_dir, human=human)
             print("recovered interrupted tail; retry the original operation")
             return 0
-        if args.terminal:
-            authorization_request(
-                args.task_dir,
-                args.action,
-                args.ceiling,
-                channel="terminal",
-                session=None,
-                approved_digest=approved_digest,
-                approved_attempt=approved_attempt,
-            )
         result = decide(
             args.task_dir,
             args.action,
             number=args.round,
             target=args.to,
             source=args.source,
-            human=human,
             ceiling=args.ceiling,
-            approved_digest=approved_digest,
-            approved_attempt=approved_attempt,
             worktree=args.worktree,
             message=args.message,
             base=args.base,

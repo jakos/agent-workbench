@@ -6,6 +6,7 @@
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -14,13 +15,6 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
-
-from test_rules import (
-    TERMINAL_OPTIONS,
-    phase_gate_consumer,
-    phase_gate_invocations,
-    quoted_terminal_option,
-)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import approval_witness as witness
@@ -131,7 +125,6 @@ fixture text that must survive
             self.task,
             action,
             ceiling,
-            channel="user-prompt",
             session="fixture-session",
             home=self.home,
         )
@@ -220,6 +213,9 @@ class WitnessStorageTest(GateFixture):
             ("attempt", "0" * 64),
             ("action", "grant"),
             ("ceiling", 4),
+            ("session", None),
+            ("session", ""),
+            ("session", "   "),
             ("nonce", "bad"),
             ("extra", "field"),
         ):
@@ -247,8 +243,8 @@ class WitnessStorageTest(GateFixture):
                 "0" * 64,
                 "1" * 64,
                 0,
-                channel="terminal",
-                session=None,
+                channel="user-prompt",
+                session="fixture-session",
             )
         self.assertFalse(witness.location(self.task, "approve").exists())
         self.assertEqual(
@@ -263,8 +259,8 @@ class WitnessStorageTest(GateFixture):
             "0" * 64,
             "1" * 64,
             0,
-            channel="terminal",
-            session=None,
+            channel="user-prompt",
+            session="fixture-session",
             now=now,
         )
         path = witness.location(self.task, "approve")
@@ -273,7 +269,7 @@ class WitnessStorageTest(GateFixture):
             "{",
             "[]",
             original[:-1] + ', "ceiling": 0}',
-            original.replace('"terminal"', '"unknown"'),
+            original.replace('"user-prompt"', '"unknown"'),
         ):
             path.write_text(raw, encoding="utf-8")
             with self.subTest(raw=raw), self.assertRaises(witness.Refusal):
@@ -286,8 +282,8 @@ class WitnessStorageTest(GateFixture):
             "0" * 64,
             "1" * 64,
             0,
-            channel="terminal",
-            session=None,
+            channel="user-prompt",
+            session="fixture-session",
         )
         with witness.locked(self.task), self.assertRaises(witness.Refusal):
             witness.consume(self.task, "approve", "0" * 64, "1" * 64, 0)
@@ -298,91 +294,6 @@ class WitnessStorageTest(GateFixture):
 
 
 class WitnessGateTest(GateFixture):
-    def test_terminal_fallback_invocation_forms(self) -> None:
-        audit = self.task / "gates.jsonl"
-        audit.write_bytes(b"")
-        before = ((self.task / "status.md").read_bytes(), audit.read_bytes())
-        for configured in (True, False):
-            if not configured:
-                self.config.unlink()
-            for agent in (
-                None,
-                *(
-                    f"task-flow:{r}"
-                    for r in (
-                        "planner",
-                        "implementer",
-                        "checker",
-                        "reviewer",
-                        "backlog",
-                    )
-                ),
-            ):
-                for tool in ("Bash", "PowerShell"):
-                    payload = {
-                        "cwd": str(self.project),
-                        "agent_type": agent,
-                        "tool_name": tool,
-                        "hook_event_name": "PreToolUse",
-                    }
-                    for action in ("approve", "grant"):
-                        for invocation in phase_gate_invocations():
-                            consumer = phase_gate_consumer(invocation, action)
-                            commands = [(consumer, False)]
-                            commands.extend(
-                                (
-                                    consumer + " " + quoted_terminal_option(option, i),
-                                    True,
-                                )
-                                for i, option in enumerate(TERMINAL_OPTIONS)
-                            )
-                            for command, denied in commands:
-                                with self.subTest(
-                                    configured=configured,
-                                    agent=agent,
-                                    tool=tool,
-                                    command=command,
-                                ):
-                                    reason = gate.hook(
-                                        {**payload, "tool_input": {"command": command}},
-                                        home=self.home,
-                                    )
-                                    if denied:
-                                        self.assertIn(
-                                            "authorization issuance", reason or ""
-                                        )
-                                    else:
-                                        self.assertIsNone(reason)
-                                    self.assertEqual(
-                                        (
-                                            (self.task / "status.md").read_bytes(),
-                                            audit.read_bytes(),
-                                        ),
-                                        before,
-                                    )
-                                    self.assertFalse(
-                                        (
-                                            self.project / ".work" / witness.DIRECTORY
-                                        ).exists()
-                                    )
-                    with self.subTest(
-                        configured=configured,
-                        agent=agent,
-                        tool=tool,
-                        ordinary_test=True,
-                    ):
-                        self.assertIsNone(
-                            gate.hook(
-                                {
-                                    **payload,
-                                    "tool_input": {
-                                        "command": "uv run --script plugins/task-flow/tests/test_phase_gate.py"
-                                    },
-                                },
-                                home=self.home,
-                            )
-                        )
-
     def prompt(self, command: str, **changes: object) -> str | None:
         return gate.hook(
             {**PROMPT, "cwd": str(self.project), "prompt": command, **changes},
@@ -399,7 +310,7 @@ class WitnessGateTest(GateFixture):
             gate.status(self.task)[1]["plan-approved"].startswith("yes (user,")
         )
         with self.assertRaises(gate.Refusal):
-            self.call("approve", source="user", human=True)
+            self.call("approve", source="user")
         self.assertIsNone(self.prompt("/task-flow:task-grant t1 4"))
         with self.assertRaises(gate.Refusal):
             self.call("approve", source="user")
@@ -448,12 +359,8 @@ class WitnessGateTest(GateFixture):
 
     def test_shortcut_changed_plan_attempt_and_expiry_refuse(self) -> None:
         for action, ceiling in (("approve", 0), ("grant", 4)):
-            for human in (False, True):
-                with (
-                    self.subTest(action=action, human=human),
-                    self.assertRaises(gate.Refusal),
-                ):
-                    self.call(action, source="user", human=human, ceiling=ceiling)
+            with self.subTest(action=action), self.assertRaises(gate.Refusal):
+                self.call(action, source="user", ceiling=ceiling)
         self.prompt("/task-flow:task-approve t1")
         self.write("plan.md", PLAN.replace("Exercise gates.", "Changed scope."))
         with self.assertRaises(gate.Refusal):
@@ -487,6 +394,38 @@ class WitnessGateTest(GateFixture):
         with ThreadPoolExecutor(max_workers=4) as pool:
             self.assertEqual(sum(pool.map(consume, range(12))), 1)
         self.assertEqual(sum(e["allowed"] for e in gate.log_entries(self.task)), 1)
+        # Independent processes exercise the persistent OS lock and atomic burn,
+        # beyond the same-process contention above.
+        self.prompt("/task-flow:task-approve t1")
+        consumers = [
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    str(Path(gate.__file__)),
+                    "approve",
+                    "--source",
+                    "user",
+                    "--task-dir",
+                    str(self.task),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=self.project,
+            )
+            for _ in range(4)
+        ]
+        try:
+            for consumer in consumers:
+                consumer.communicate(timeout=30)
+            self.assertEqual(sum(p.returncode == 0 for p in consumers), 1)
+            self.assertTrue(all(p.returncode in (0, 2) for p in consumers))
+            self.assertEqual(sum(e["allowed"] for e in gate.log_entries(self.task)), 2)
+        finally:
+            for consumer in consumers:
+                if consumer.poll() is None:
+                    consumer.kill()
+                consumer.communicate()
 
     def test_persistence_failures_burn_evidence_and_preserve_status(self) -> None:
         before = (self.task / "status.md").read_bytes()
@@ -565,16 +504,6 @@ class WitnessGateTest(GateFixture):
                         {**payload, "tool_input": {"command": command}}, home=self.home
                     )
                 )
-                for option in ("--terminal", '"--terminal"', "--term"):
-                    self.assertIsNotNone(
-                        gate.hook(
-                            {
-                                **payload,
-                                "tool_input": {"command": command + " " + option},
-                            },
-                            home=self.home,
-                        )
-                    )
             for command in (
                 "python phase_gate.py hook",
                 'python "phase_gate.py" "hook"',
@@ -627,38 +556,10 @@ class WitnessGateTest(GateFixture):
                             )
                         )
 
-    def test_cli_rejects_terminal_option_abbreviations_without_issuance(self) -> None:
-        before = (self.task / "status.md").read_bytes()
-        for action, ceiling in (("approve", 0), ("grant", 4)):
-            for length in range(1, len("terminal")):
-                with (
-                    self.subTest(action=action, option="--" + "terminal"[:length]),
-                    patch.object(
-                        gate, "human_confirmation", return_value=(None, None)
-                    ) as confirm,
-                    patch.object(gate, "authorization_request") as issue,
-                    patch.object(gate.sys, "stderr"),
-                ):
-                    with self.assertRaises(SystemExit) as error:
-                        gate.main(
-                            [
-                                action,
-                                "--task-dir",
-                                str(self.task),
-                                "--source",
-                                "user",
-                                "--ceiling",
-                                str(ceiling),
-                                "--" + "terminal"[:length],
-                            ]
-                        )
-                    self.assertEqual(error.exception.code, 2)
-                    confirm.assert_not_called()
-                    issue.assert_not_called()
-            self.assertFalse(witness.location(self.task, action).exists())
-        self.assertEqual((self.task / "status.md").read_bytes(), before)
-
-    def test_explicit_terminal_and_bare_cli(self) -> None:
+    def test_removed_terminal_options_refuse_without_issuance(self) -> None:
+        audit = self.task / "gates.jsonl"
+        audit.write_bytes(b"")
+        before = ((self.task / "status.md").read_bytes(), audit.read_bytes())
         for action, ceiling in (("approve", 0), ("grant", 4)):
             argv = [
                 action,
@@ -669,41 +570,192 @@ class WitnessGateTest(GateFixture):
                 "--ceiling",
                 str(ceiling),
             ]
-            with patch.object(gate, "human_confirmation") as confirm:
-                self.assertEqual(gate.main(argv), 2)
+            for length in range(1, len("terminal") + 1):
+                option = "--" + "terminal"[:length]
+                with (
+                    self.subTest(action=action, option=option),
+                    patch.object(gate, "human_confirmation") as confirm,
+                    patch.object(gate, "authorization_request") as issue,
+                    patch("builtins.input") as challenge,
+                    patch.object(gate.sys, "stderr"),
+                    self.assertRaises(SystemExit) as error,
+                ):
+                    gate.main([*argv, option])
+                self.assertEqual(error.exception.code, 2)
                 confirm.assert_not_called()
-            with patch.object(gate.sys.stdin, "isatty", return_value=False):
-                self.assertEqual(gate.main([*argv, "--terminal"]), 2)
-            with (
-                patch.object(gate.sys.stdin, "isatty", return_value=True),
-                patch.object(gate.sys.stdout, "isatty", return_value=False),
-            ):
-                self.assertEqual(gate.main([*argv, "--terminal"]), 2)
-            with (
-                patch.object(gate.sys.stdin, "isatty", return_value=True),
-                patch.object(gate.sys.stdout, "isatty", return_value=True),
-                patch("builtins.input", return_value="yes"),
-                patch("builtins.print"),
-            ):
-                self.assertEqual(gate.main([*argv, "--terminal"]), 2)
+                issue.assert_not_called()
+                challenge.assert_not_called()
+            # Execute both real entry points from an isolated project. -Bm combines
+            # the interpreter flags that bypassed the former text matcher.
+            for invocation in ([str(Path(gate.__file__))], ["-Bm", "phase_gate"]):
+                with self.subTest(action=action, invocation=invocation):
+                    result = subprocess.run(
+                        [sys.executable, *invocation, *argv, "--terminal"],
+                        input="forged confirmation\n",
+                        text=True,
+                        capture_output=True,
+                        cwd=self.project,
+                        env={
+                            **os.environ,
+                            "PYTHONPATH": str(Path(gate.__file__).parent),
+                        },
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("unrecognized arguments: --terminal", result.stderr)
+                    self.assertEqual(result.stdout, "")
             self.assertFalse(witness.location(self.task, action).exists())
-            token = gate.digest(PLAN.encode())
-            text, fields = gate.status(self.task)
-            identity = gate.resolved_attempt(
-                text, fields, self.task, gate.log_entries(self.task)
+        self.assertFalse((self.task.parent / witness.DIRECTORY).exists())
+        self.assertEqual(
+            ((self.task / "status.md").read_bytes(), audit.read_bytes()), before
+        )
+
+    def test_bare_consumers_require_prompt_evidence(self) -> None:
+        for action, ceiling in (("approve", 0), ("grant", 4)):
+            argv = [
+                action,
+                "--task-dir",
+                str(self.task),
+                "--source",
+                "user",
+                "--ceiling",
+                str(ceiling),
+            ]
+            before = (self.task / "status.md").read_bytes()
+            for interactive in (False, True):
+                with (
+                    self.subTest(action=action, interactive=interactive),
+                    patch.object(gate.sys.stdin, "isatty", return_value=interactive),
+                    patch.object(gate.sys.stdout, "isatty", return_value=interactive),
+                    patch.object(gate, "human_confirmation") as confirm,
+                    patch.object(gate, "authorization_request") as issue,
+                    patch("builtins.input") as challenge,
+                    patch.object(gate.sys, "stderr"),
+                ):
+                    self.assertEqual(gate.main(argv), 2)
+                    confirm.assert_not_called()
+                    issue.assert_not_called()
+                    challenge.assert_not_called()
+                self.assertEqual((self.task / "status.md").read_bytes(), before)
+                self.assertFalse(witness.location(self.task, action).exists())
+            command = f"/task-flow:task-{action} t1" + (
+                f" {ceiling}" if ceiling else ""
             )
-            with (
-                patch.object(gate.sys.stdin, "isatty", return_value=True),
-                patch.object(gate.sys.stdout, "isatty", return_value=True),
-                patch(
-                    "builtins.input",
-                    return_value=f"{action} t1 {token} {identity} {ceiling}",
-                ),
-            ):
-                self.assertEqual(gate.main([*argv, "--terminal"]), 0)
+            self.assertIsNone(self.prompt(command))
+            with patch.object(gate.sys, "stdout"):
+                self.assertEqual(gate.main(argv), 0)
             self.assertEqual(
-                gate.log_entries(self.task)[-1]["authorization"]["channel"], "terminal"
+                gate.log_entries(self.task)[-1]["authorization"]["channel"],
+                "user-prompt",
             )
+
+    def test_terminal_witnesses_refuse_but_audit_remains_readable(self) -> None:
+        token = gate.digest(PLAN.encode())
+        identity = gate.attempt(*gate.status(self.task), self.task)
+        before = (self.task / "status.md").read_bytes()
+        for action, ceiling in (("approve", 0), ("grant", 4)):
+            for session in (None, "session"):
+                with (
+                    self.subTest(action=action, session=session),
+                    self.assertRaises(witness.Refusal),
+                ):
+                    witness.issue(
+                        self.task,
+                        action,
+                        token,
+                        identity,
+                        ceiling,
+                        channel="terminal",
+                        session=session,
+                    )
+                self.assertFalse(witness.location(self.task, action).exists())
+            for session in (None, "", "   "):
+                with self.subTest(session=session), self.assertRaises(witness.Refusal):
+                    witness.issue(
+                        self.task,
+                        action,
+                        token,
+                        identity,
+                        ceiling,
+                        channel="user-prompt",
+                        session=session,
+                    )
+            self.assertIsNone(
+                self.prompt(
+                    f"/task-flow:task-{action} t1" + (f" {ceiling}" if ceiling else "")
+                )
+            )
+            path = witness.location(self.task, action)
+            value = json.loads(path.read_bytes())
+            value.update(channel="terminal", session=None)
+            path.write_text(json.dumps(value), encoding="utf-8")
+            legacy_bytes = path.read_bytes()
+            with self.assertRaises(gate.Refusal):
+                self.call(action, source="user", ceiling=ceiling)
+            self.assertEqual(path.read_bytes(), legacy_bytes)
+            self.assertEqual((self.task / "status.md").read_bytes(), before)
+        self.approve()
+        entries = gate.log_entries(self.task)
+        entries[-1]["authorization"]["channel"] = "terminal"
+        audit = self.task / "gates.jsonl"
+        audit.write_text(
+            "".join(json.dumps(e) + "\n" for e in entries), encoding="utf-8"
+        )
+        historical = audit.read_bytes()
+        self.assertEqual(gate.log_entries(self.task), entries)
+        self.assertEqual(audit.read_bytes(), historical)
+        self.call("transition", target="baseline")
+        self.assertTrue(audit.read_bytes().startswith(historical))
+
+    def test_recovery_cli_requires_interactive_confirmation_without_issuance(
+        self,
+    ) -> None:
+        audit = self.task / "gates.jsonl"
+        audit.write_bytes(b"")
+        original = audit.read_bytes()
+        before = (self.task / "status.md").read_bytes()
+        argv = ["recover", "--source", "user", "--task-dir", str(self.task)]
+        token = gate.digest(PLAN.encode())
+        identity = gate.attempt(*gate.status(self.task), self.task)
+        for stdin, stdout, answer in (
+            (False, True, ""),
+            (True, False, ""),
+            (True, True, "yes"),
+            (True, True, f"recover t1 {token} {identity} 0"),
+        ):
+            accepted = stdin and stdout and answer.startswith("recover ")
+            with (
+                self.subTest(stdin=stdin, stdout=stdout, answer=answer),
+                patch.object(gate.sys.stdin, "isatty", return_value=stdin),
+                patch.object(gate.sys.stdout, "isatty", return_value=stdout),
+                patch("builtins.input", return_value=answer),
+                patch("builtins.print"),
+                patch.object(gate, "authorization_request") as issue,
+                patch.object(gate, "recover") as recovery,
+            ):
+                self.assertEqual(gate.main(argv), 0 if accepted else 2)
+                issue.assert_not_called()
+            self.assertEqual((self.task / "status.md").read_bytes(), before)
+            self.assertFalse(witness.location(self.task, "approve").exists())
+            self.assertFalse(witness.location(self.task, "grant").exists())
+            if not accepted:
+                self.assertEqual(audit.read_bytes(), original)
+            self.assertEqual(recovery.called, accepted)
+        self.assertFalse((self.task.parent / witness.DIRECTORY).exists())
+        self.assertIn(
+            "audit recovery",
+            gate.hook(
+                {
+                    "cwd": str(self.project),
+                    "tool_name": "Bash",
+                    "tool_input": {
+                        "command": f"python phase_gate.py recover --source user --task-dir {self.task}"
+                    },
+                },
+                home=self.home,
+            )
+            or "",
+        )
 
     def test_audit_reference_strictness_and_legacy_readability(self) -> None:
         self.approve()
@@ -738,13 +790,13 @@ class PhaseGateTest(GateFixture):
         gate.initialize(self.task, "main", home=self.home)
         gate.initialize(self.task, "main", home=self.home)
         self.call("transition", target="planned")
-        with self.assertRaisesRegex(gate.Refusal, "changed during"):
-            self.call(
-                "approve",
-                source="user",
-                human=True,
-                approved_digest=gate.digest(b"older plan"),
-            )
+        gate.authorization_request(
+            self.task, "approve", 0, session="fixture-session", home=self.home
+        )
+        self.write("plan.md", PLAN.replace("Exercise gates.", "Changed scope."))
+        with self.assertRaisesRegex(gate.Refusal, "does not match"):
+            self.call("approve", source="user")
+        self.write("plan.md", PLAN)
         self.approve()
         self.call("note", message="round 1 implementer: fixture.py")
         self.assertIn(
@@ -799,7 +851,7 @@ class PhaseGateTest(GateFixture):
             with self.subTest(text=text):
                 self.write("status.md", text)
                 with self.assertRaises(gate.Refusal):
-                    self.call("approve", human=True, source="user")
+                    self.call("approve", source="user")
                 self.assertEqual(
                     (self.task / "status.md").read_text(encoding="utf-8"), text
                 )
@@ -849,7 +901,7 @@ class PhaseGateTest(GateFixture):
         for args in (
             {"source": "policy", "ceiling": 4},
             {"source": "user", "ceiling": 4},
-            {"source": "user", "human": True, "ceiling": 0},
+            {"source": "user", "ceiling": 0},
         ):
             with self.assertRaises(gate.Refusal):
                 self.call("grant", **args)
@@ -880,19 +932,15 @@ class PhaseGateTest(GateFixture):
         with self.assertRaisesRegex(gate.Refusal, "authorization"):
             self.call("implement")
 
-    def test_human_grant_confirmation_cannot_cross_attempts(self) -> None:
+    def test_prompt_grant_cannot_cross_attempts(self) -> None:
         self.start()
-        text, fields = gate.status(self.task)
-        confirmed = gate.attempt(text, fields, self.task)
+        gate.authorization_request(
+            self.task, "grant", 4, session="fixture-session", home=self.home
+        )
+        text, _ = gate.status(self.task)
         self.write("status.md", text.replace("- base: main", "- base: changed-base"))
-        with self.assertRaisesRegex(gate.Refusal, "attempt changed"):
-            self.call(
-                "grant",
-                source="user",
-                human=True,
-                ceiling=4,
-                approved_attempt=confirmed,
-            )
+        with self.assertRaisesRegex(gate.Refusal, "does not match"):
+            self.call("grant", source="user", ceiling=4)
         self.assertFalse(gate.log_entries(self.task)[-1]["allowed"])
 
     def test_no_progress_nonempty_only_and_baseline_exclusion(self) -> None:
@@ -1027,7 +1075,7 @@ class PhaseGateTest(GateFixture):
         self.approve()
         for args in (
             {"source": "model"},
-            {"source": "user", "human": True, "ceiling": -1},
+            {"source": "user", "ceiling": -1},
         ):
             with self.assertRaises(gate.Refusal):
                 self.call("grant", **args)
@@ -1721,18 +1769,11 @@ class RebaseTest(GateFixture):
             encoding="utf-8",
         )
         self.call("rebase", base="task/parent")
-        with (
-            patch.object(gate.sys.stdin, "isatty", return_value=True),
-            patch.object(gate.sys.stdout, "isatty", return_value=True),
-            patch(
-                "builtins.input",
-                return_value=f"grant t1 {gate.digest(PLAN.encode())} {original} 5",
-            ),
-            patch("builtins.print"),
-        ):
-            self.assertEqual(
-                gate.human_confirmation(self.task, "grant", 5)[1], original
-            )
+        text, fields = gate.status(self.task)
+        self.assertEqual(
+            gate.resolved_attempt(text, fields, self.task, gate.log_entries(self.task)),
+            original,
+        )
         # An old-base rollback cannot select an earlier link for replay.
         completed = gate.read(self.task / "status.md")
         self.write("status.md", completed.replace("base: task/parent", "base: main"))

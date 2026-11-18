@@ -6,7 +6,7 @@
 
 This is a hook/tool boundary for a private session, not an OS security boundary.
 The entire repository-root storage directory, including temporary and consumed files,
-is reserved for trusted hooks and explicit interactive terminal authorization.
+is reserved for trusted user-prompt hooks.
 """
 
 import hashlib
@@ -116,12 +116,9 @@ def validate(value: object, *, now: datetime) -> dict:
             if value["action"] == "approve"
             else value["ceiling"] < 1
         )
-        or value["channel"] not in ("user-prompt", "terminal")
-        or (
-            not isinstance(value["session"], str) or not value["session"].strip()
-            if value["channel"] == "user-prompt"
-            else value["session"] is not None
-        )
+        or value["channel"] != "user-prompt"
+        or not isinstance(value["session"], str)
+        or not value["session"].strip()
     ):
         raise Refusal("invalid authorization witness")
     try:
