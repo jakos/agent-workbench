@@ -30,12 +30,12 @@ the guide records task evidence and explains declared epic dependencies.
 ```mermaid
 flowchart TD
     foundation["Finished: foundation, CI, task records, epics"]
-    roles["Finished: configurable roles and CLI benchmarking"]
+    roles["Finished: configurable roles and CLI drivers"]
     control["Finished: risk, policy, enforced gates, metrics"]
     review["Finished: opt-in publication and advisory PR review"]
     commands["Finished: command sandboxing"]
     isolation["Waiting / unfinished: whole-session isolation; replacement awaits approval"]
-    quality["Planned: quality benchmarks, test evaluation, scheduled evals, design / UI roles"]
+    quality["Planned: scheduled evals, design / UI roles"]
     release["Planned: release CI"]
     maintain["Planned: maintenance signals, intake, regression feedback, adoption"]
     deploy["Human decision: deployment; no scheduled implementation"]

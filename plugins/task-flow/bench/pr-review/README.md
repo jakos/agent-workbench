@@ -1,6 +1,6 @@
 # PR review evaluation
 
-This is a separate evaluation of advisory PR review, not an implementer benchmark.
+This is an offline evaluation of advisory PR review (`scripts/pr_review.py`).
 `cases.json` freezes six defect cases and two clean controls. All eight are explicitly
 **reconstructed** minimal counterexamples, not exact historical diffs. Each records
 the full source fix commit, scenario, self-contained old/new input, SHA-256 input

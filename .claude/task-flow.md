@@ -20,8 +20,6 @@
 ### python, docs, config, generic
 ```
 uv run --script plugins/task-flow/tests/test_autopilot.py
-uv run --script plugins/task-flow/tests/test_bench.py
-uv run --script plugins/task-flow/tests/test_bench_publish.py
 uv run --script plugins/task-flow/tests/test_docs.py
 uv run --script plugins/task-flow/tests/test_doctor.py
 uv run --script plugins/task-flow/tests/test_drivers.py

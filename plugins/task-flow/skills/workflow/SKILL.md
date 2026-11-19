@@ -39,8 +39,7 @@ chat history; everything another role needs is written to `.work/<task-id>/`.
 
 Autopilot runs live in `.work/_autopilot/<run-id>/` (`requirements.md`, `run.md`,
 `report.md`, plus `backlog.md` only for decomposed runs); their tasks are ordinary
-`.work/<task-id>/` folders. Benchmark runs live in `.work/_bench/<run-id>/`; their task
-folders are scratch copies under `runs/<n>/.work/`, not real tasks.
+`.work/<task-id>/` folders.
 
 Epics live in `.work/_epics/<epic-id>/` (`epic.md`, plus `report.md` and
 `attempts/<task-id>/attempt-<k>/` once written); an epic is **not** a task: it never has

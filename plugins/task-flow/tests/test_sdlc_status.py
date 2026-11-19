@@ -31,9 +31,9 @@ README_TEMPLATE = """\
 
 Intro line.
 
-<!-- bench:latest:start -->
-bench body
-<!-- bench:latest:end -->
+<!-- other:block:start -->
+other body
+<!-- other:block:end -->
 
 ## task-flow
 
@@ -341,7 +341,7 @@ class RenderTest(RepoTest):
             return "".join(lines[: s + 1]), "".join(lines[e:])
 
         self.assertEqual(outside(after), outside(before))
-        self.assertIn("<!-- bench:latest:start -->", after)
+        self.assertIn("<!-- other:block:start -->", after)
         self.assertIn("Trailing line.", after)
 
     def test_render_is_idempotent_byte_for_byte(self):
