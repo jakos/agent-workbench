@@ -7,10 +7,9 @@
 A git worktree separates files, not processes. With a `[sandbox]` table in the
 repository's `.claude/task-flow.models.toml`, the commands that model-written code can
 influence run in a container instead of on the host: the API-loop implementer's
-`run_command` and `post_edit` commands (scripts/implement.py), the script checker's
-verification commands (scripts/gates.py) and the benchmark's hidden checks
-(bench/bench.py, through gates.py). Model calls, credentials, git and the runner's file
-tools stay on the host. Without the table, or with `backend = "none"`, nothing changes.
+`run_command` and `post_edit` commands (scripts/implement.py) and the script checker's
+verification commands (scripts/gates.py). Model calls, credentials, git and the
+runner's file tools stay on the host. Without the table, or with `backend = "none"`, nothing changes.
 
 [sandbox] keys (only in the project file; the user file may not set them):
 
