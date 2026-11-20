@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.17.0 - 2026-11-20
+
+### Breaking changes
+
+- chore(task-flow)!: remove the benchmark harness (#3) (1831b1b)
+
+### Features
+
+- feat(task-flow): approve plans and grant rounds in session (#2) (1ad9bee)
+
+### Other
+
+- perf(task-flow): run gate checks in parallel and speed up implement tests (2e73020)
+
+- docs: rebuild README and add a short how-to with a roadmap graph (2abd426)
+
 ## 0.16.0 - 2026-11-15
 
 ### Features
