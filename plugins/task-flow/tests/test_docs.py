@@ -132,6 +132,34 @@ class DocumentationTest(unittest.TestCase):
         project = (ROOT / ".claude/task-flow.models.toml").read_text(encoding="utf-8")
         self.assertEqual(tomllib.loads(project)["gates"]["workers"], 4)
 
+    def test_claude_subagent_effort_contract(self) -> None:
+        plugin = ROOT / "plugins/task-flow"
+        levels = ("low", "medium", "high", "xhigh", "max")
+        for name in ("README.md", "skills/workflow/orchestration.md"):
+            text = (plugin / name).read_text(encoding="utf-8")
+            with self.subTest(page=name):
+                self.assertIn("[roles.effort]", text)
+                for level in levels:
+                    self.assertIn(f"`{level}`", text)
+        orchestration = (plugin / "skills/workflow/orchestration.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('"effort"', orchestration)
+        self.assertIn("claude:opus, effort high", orchestration)
+        self.assertIn("Pass the `effort` argument", orchestration)
+        skill = (plugin / "skills/workflow/SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("`effort` key", skill)
+        template = (plugin / "templates/models.toml").read_text(encoding="utf-8")
+        parsed = tomllib.loads(template)
+        self.assertEqual(
+            set(parsed["roles"]),
+            {"planner", "implementer", "checker", "reviewer", "backlog"},
+        )
+        self.assertNotIn("effort", parsed["roles"])
+        self.assertIn("# [roles.effort]", template)
+        for level in levels:
+            self.assertIn(f'"{level}"', template)
+
     def test_session_authorization_skills_and_navigation(self) -> None:
         plugin = ROOT / "plugins" / "task-flow"
         for name in ("task-approve", "task-grant"):

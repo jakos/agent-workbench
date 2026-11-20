@@ -126,6 +126,14 @@ file sets the key last (the project file wins) replaces the other form entirely,
 unknown keys inside the table are errors, so future routing keys fail loudly until
 they are implemented.
 
+[roles.effort] is an optional table keyed by role name that sets the reasoning effort
+of a Claude subagent role: one of "low", "medium", "high", "xhigh", "max". It merges per
+role key across the user and project files (the project file wins). Unknown role keys,
+other values and a scalar `effort = ...` are errors. After merging, effort for a role
+whose value is a profile name or "script" (including [roles.implementer]) is an error:
+effort applies only to Claude roles. Unset keeps today's behaviour. efforts() returns
+the mapping; load() never puts an effort key in its roles dict.
+
 CLI:
   models.py show <profile> [--project <repo-root>]
     Print the resolved profile as `key = value` lines and `api_key: set|missing|none
@@ -140,7 +148,8 @@ CLI:
     Print the resolved [roles] mapping as one JSON object with sorted keys: each of the
     five roles maps to {"value": <configured value, or "claude" when unset>, "kind":
     "claude" | "profile" | "script", "model": <opus|sonnet|haiku suffix of claude:<m>,
-    or null>}. Active implementer rules add versioned routing evidence; --task-dir
+    or null>, "effort": <low|medium|high|xhigh|max of [roles.effort] for a Claude role,
+    or null>}. `select` prints the same "effort" key. Active implementer rules add versioned routing evidence; --task-dir
     resolves the task, otherwise the default is explicitly task-dependent. Previews
     are read-only. Exit 2 with the reason on stderr for invalid config or plan.
 """
@@ -170,6 +179,7 @@ DIMENSIONS = ("steps", "criteria", "commands", "declared_paths")
 GATES_KEYS = {"command_timeout_seconds", "reviewer_independence", "workers"}
 GATES_DEFAULT_TIMEOUT = 600
 CLAUDE_VALUES = {"claude", "claude:opus", "claude:sonnet", "claude:haiku"}
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 PROMPT_VIAS = {"stdin", "file", "arg"}
 USAGE_FORMATS = {"codex-jsonl", "none"}
 # Placeholders a "cli" profile's command arguments may contain; nothing else is
@@ -440,17 +450,39 @@ def _validate_profiles(path: Path, profiles) -> dict:
     return profiles
 
 
-def _validate_roles(path: Path, roles: object) -> dict:
+def _validate_effort(path: Path, value: object) -> dict[str, str]:
+    """Validate one file's [roles.effort] table: role name -> reasoning level."""
+    if not isinstance(value, dict):
+        raise ConfigError(f"{path}: roles.effort: must be a table keyed by role")
+    for role, level in value.items():
+        if role not in ROLES:
+            raise ConfigError(
+                f"{path}: roles.effort.{role}: unknown role (use {sorted(ROLES)})"
+            )
+        if not isinstance(level, str) or level not in EFFORT_LEVELS:
+            raise ConfigError(
+                f"{path}: roles.effort.{role}: {level!r} is not a level "
+                f"(use one of {list(EFFORT_LEVELS)})"
+            )
+    return dict(value)
+
+
+def _validate_roles(path: Path, roles: object) -> tuple[dict, dict[str, str]]:
     """Validate role forms before merging; retain implementer table leaves.
 
     The scalar/table form replaces the other form across configuration files.
     Two tables merge by leaf before required defaults, targets and bounds are checked.
     load returns scalar role values for compatibility and optionally exposes rules.
+    The optional [roles.effort] table is returned separately as the second value.
     """
     if not isinstance(roles, dict):
         raise ConfigError(f"{path}: roles: must be a table")
     normalized: dict[str, str | dict] = {}
+    effort: dict[str, str] = {}
     for role, value in roles.items():
+        if role == "effort":
+            effort = _validate_effort(path, value)
+            continue
         if role not in ROLES:
             raise ConfigError(
                 f"{path}: roles.{role}: unknown role (use {sorted(ROLES)})"
@@ -474,7 +506,7 @@ def _validate_roles(path: Path, roles: object) -> dict:
         if not isinstance(value, str) or not value:
             raise ConfigError(f"{path}: roles.{role}: must be a non-empty string")
         normalized[role] = value
-    return normalized
+    return normalized, effort
 
 
 def _validate_gates(path: Path, gates) -> dict:
@@ -568,21 +600,24 @@ def _validate_cli_profile(name, table, full, key_where, where) -> None:
         )
 
 
-def load(
-    project_root: Path | None = None, *, with_rules: bool = False
-) -> tuple[dict, dict] | tuple[dict, dict, dict | None]:
-    """Return (profiles, roles): merged, validated, defaults filled in profiles."""
+def _load_all(project_root: Path | None) -> tuple[dict, dict, dict | None, dict]:
+    """Merge and validate every file: (profiles, roles, rules, effort)."""
     sources = [user_file()]
     if project_root is not None:
         sources.append(project_file(project_root))
     raw_profiles: dict[str, dict] = {}
     raw_roles: dict[str, str | dict] = {}
     origin: dict[tuple, Path] = {}
+    raw_effort: dict[str, str] = {}
+    effort_origin: dict[str, Path] = {}
     policy = sandbox.DISABLED
     for path in sources:
         data = _read(path)
         profiles = _validate_profiles(path, data.get("profiles", {}))
-        roles = _validate_roles(path, data.get("roles", {}))
+        roles, effort = _validate_roles(path, data.get("roles", {}))
+        for role, level in effort.items():
+            raw_effort[role] = level
+            effort_origin[role] = path
         _validate_gates(path, data.get("gates", {}))
         if "sandbox" in data:
             policy = _validate_sandbox(path, data["sandbox"], path == sources[0])
@@ -715,7 +750,28 @@ def load(
             )
         if value not in resolved:
             raise ConfigError(f"{path}: roles.{role}: unknown profile {value!r}")
+    for role in raw_effort:
+        value = raw_roles.get(role, "claude")
+        if value not in CLAUDE_VALUES:
+            raise ConfigError(
+                f"{effort_origin[role]}: roles.effort.{role}: set for role {role!r} "
+                f"whose value is {value!r}; effort applies only to Claude roles "
+                "(set effort in the file that makes the role a Claude role)"
+            )
+    return resolved, raw_roles, rules, raw_effort
+
+
+def load(
+    project_root: Path | None = None, *, with_rules: bool = False
+) -> tuple[dict, dict] | tuple[dict, dict, dict | None]:
+    """Return (profiles, roles): merged, validated, defaults filled in profiles."""
+    resolved, raw_roles, rules, _effort = _load_all(project_root)
     return (resolved, raw_roles, rules) if with_rules else (resolved, raw_roles)
+
+
+def efforts(project_root: Path | None = None) -> dict[str, str]:
+    """The validated [roles.effort] mapping: only roles with an effort set."""
+    return dict(_load_all(project_root)[3])
 
 
 def _validate_sandbox(path: Path, table: object, user_scope: bool) -> sandbox.Policy:
@@ -1195,8 +1251,12 @@ def show(profile_name: str, project_root: Path) -> str:
 
 
 def resolve_roles(project_root: Path, task_dir: Path | None = None) -> dict:
-    """Resolve every role to {"value", "kind", "model"}; unset roles are bare "claude"."""
+    """Resolve every role to {"value", "kind", "model", "effort"}.
+
+    Unset roles are bare "claude"; effort is the [roles.effort] level of a Claude role.
+    """
     _profiles, roles = load(project_root)
+    effort = efforts(project_root)
     selection = resolve_implementer(project_root, task_dir)
     roles["implementer"] = selection["value"]
     resolved = {}
@@ -1209,7 +1269,12 @@ def resolve_roles(project_root: Path, task_dir: Path | None = None) -> dict:
             kind, model = "script", None
         else:
             kind, model = "profile", None
-        resolved[role] = {"value": value, "kind": kind, "model": model}
+        resolved[role] = {
+            "value": value,
+            "kind": kind,
+            "model": model,
+            "effort": effort.get(role) if kind == "claude" else None,
+        }
     if "routing" in selection:
         resolved["implementer"]["routing"] = selection["routing"]
     return resolved
@@ -1221,7 +1286,8 @@ def resolve_role_profile(
     """Resolve one role for one run, with an optional invocation-scoped override.
 
     Returns {"role", "value", "kind", "profile", "method", "model", "billing",
-    "fallback"}: kind is "claude", "profile" or "script"; method is "claude",
+    "fallback", "effort"}: effort is the [roles.effort] level for a Claude role and
+    None for a script role, a profile and any override; kind is "claude", "profile" or "script"; method is "claude",
     "api", "cli" or "script"; profile is the profile name or None; billing is the
     profile's billing or "subscription (Claude Code)" / "none (script)". The
     override must name an enabled configured profile — never a free-form model or
@@ -1251,6 +1317,7 @@ def resolve_role_profile(
             "model": model,
             "billing": "subscription (Claude Code)",
             "fallback": [],
+            "effort": efforts(project_root).get(role),
         }
     if value == "script":
         if role != "checker":
@@ -1264,6 +1331,7 @@ def resolve_role_profile(
             "model": None,
             "billing": "none (script)",
             "fallback": [],
+            "effort": None,
         }
     if role not in PROFILE_ROLES:
         raise ConfigError(
@@ -1304,6 +1372,7 @@ def resolve_role_profile(
         "model": profile["model"],
         "billing": profile["billing"],
         "fallback": list(profile["fallback"]),
+        "effort": None,
     }
 
 

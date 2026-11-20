@@ -207,6 +207,20 @@ class TaskRecordTest(unittest.TestCase):
     def record_path(self, worktree, task_id=TASK_ID):
         return worktree / "docs" / "tasks" / f"{task_id}.md"
 
+    def test_claude_impl_effort_key_keeps_record(self) -> None:
+        outputs = []
+        for impl in (IMPL_CLAUDE, {**IMPL_CLAUDE, "effort": "high"}):
+            repo, task, worktree = self.fresh()
+            self.write_task(task)
+            (task / "impl-2.json").write_text(json.dumps(impl), encoding="utf-8")
+            rendered = self.cli("render", repo, task, worktree)
+            self.assertEqual(rendered.returncode, 0, rendered.stderr)
+            trailers = self.cli("trailers", repo, task, worktree)
+            self.assertEqual(trailers.returncode, 0, trailers.stderr)
+            outputs.append((self.record_path(worktree).read_bytes(), trailers.stdout))
+        self.assertEqual(outputs[0], outputs[1])
+        self.assertIn(b"Task-Implementer: claude/opus", outputs[1][1])
+
     def test_enabled_final_risk_and_legacy(self) -> None:
         repo, task, worktree = self.fresh()
         self.write_task(task)

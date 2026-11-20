@@ -472,7 +472,7 @@ declared_paths = 5
         self.assertEqual(roles, {"implementer": "mistral"})
         self.assertEqual(
             models.resolve_roles(self.repo)["implementer"],
-            {"value": "mistral", "kind": "profile", "model": None},
+            {"value": "mistral", "kind": "profile", "model": None, "effort": None},
         )
         # the table and the scalar resolve identically
         scalar = BASE + '[roles]\nimplementer = "mistral"\n'
@@ -632,7 +632,8 @@ declared_paths = 5
         self.assertEqual(set(mapping), set(models.ROLES))
         for entry in mapping.values():
             self.assertEqual(
-                entry, {"kind": "claude", "model": None, "value": "claude"}
+                entry,
+                {"effort": None, "kind": "claude", "model": None, "value": "claude"},
             )
 
     def test_roles_cli_unreadable_status_exits_2(self) -> None:
@@ -681,29 +682,37 @@ declared_paths = 5
         mapping = self.roles_json()
         self.assertEqual(
             mapping["planner"],
-            {"kind": "claude", "model": "haiku", "value": "claude:haiku"},
+            {
+                "effort": None,
+                "kind": "claude",
+                "model": "haiku",
+                "value": "claude:haiku",
+            },
         )
         self.assertEqual(
             mapping["reviewer"],
-            {"kind": "claude", "model": "sonnet", "value": "claude:sonnet"},
+            {
+                "effort": None,
+                "kind": "claude",
+                "model": "sonnet",
+                "value": "claude:sonnet",
+            },
         )
-        self.assertEqual(
-            mapping["checker"], {"kind": "claude", "model": None, "value": "claude"}
-        )
+        plain = {"effort": None, "kind": "claude", "model": None, "value": "claude"}
+        self.assertEqual(mapping["checker"], plain)
         for role in ("implementer", "backlog"):
-            self.assertEqual(
-                mapping[role], {"kind": "claude", "model": None, "value": "claude"}
-            )
+            self.assertEqual(mapping[role], plain)
 
     def test_roles_cli_profile_and_script_kinds(self):
         self.project(BASE + '[roles]\nimplementer = "mistral"\nchecker = "script"\n')
         mapping = self.roles_json()
         self.assertEqual(
             mapping["implementer"],
-            {"kind": "profile", "model": None, "value": "mistral"},
+            {"effort": None, "kind": "profile", "model": None, "value": "mistral"},
         )
         self.assertEqual(
-            mapping["checker"], {"kind": "script", "model": None, "value": "script"}
+            mapping["checker"],
+            {"effort": None, "kind": "script", "model": None, "value": "script"},
         )
 
     def test_roles_cli_project_overrides_user(self):
@@ -1359,6 +1368,121 @@ limit_patterns = ["rate limit reached"]
         )
         self.assertEqual(done.returncode, 2)
         self.assertIn("unknown profile", done.stderr)
+
+    def test_effort_unset_reports_null(self):
+        for config in (None, BASE, '[roles]\nplanner = "claude:opus"\n'):
+            with self.subTest(config=config):
+                if config is not None:
+                    self.project(config)
+                for entry in self.roles_json().values():
+                    self.assertIsNone(entry["effort"])
+                self.assertEqual(models.efforts(self.repo), {})
+                done = self.run_cli("select", "planner", "--project", str(self.repo))
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertIsNone(json.loads(done.stdout)["effort"])
+                done = self.run_cli("role", "planner")
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertNotIn("effort", done.stdout)
+                self.assertEqual(len(done.stdout.split()), 1)
+
+    def test_roles_cli_reports_effort(self):
+        self.project(
+            '[roles]\nplanner = "claude:opus"\n'
+            '[roles.effort]\nplanner = "high"\nchecker = "low"\n'
+        )
+        mapping = self.roles_json()
+        self.assertEqual(
+            mapping["planner"],
+            {
+                "effort": "high",
+                "kind": "claude",
+                "model": "opus",
+                "value": "claude:opus",
+            },
+        )
+        self.assertEqual(mapping["checker"]["effort"], "low")
+        for role in ("implementer", "reviewer", "backlog"):
+            self.assertIsNone(mapping[role]["effort"])
+        done = self.run_cli("select", "planner", "--project", str(self.repo))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout)["effort"], "high")
+        done = self.run_cli("role", "planner")
+        self.assertEqual(done.stdout.strip(), "claude:opus")
+
+    def test_effort_project_overrides_user_per_role(self):
+        self.user('[roles.effort]\nplanner = "low"\nreviewer = "max"\n')
+        self.project('[roles.effort]\nplanner = "xhigh"\n')
+        self.assertEqual(
+            models.efforts(self.repo), {"planner": "xhigh", "reviewer": "max"}
+        )
+
+    def test_effort_rejects_invalid_entries(self):
+        cases = {
+            '[roles.effort]\nplanner = "High"\n': "roles.effort.planner",
+            '[roles.effort]\nplanner = "ultra"\n': "roles.effort.planner",
+            '[roles.effort]\nplanner = ""\n': "roles.effort.planner",
+            "[roles.effort]\nplanner = 3\n": "roles.effort.planner",
+            '[roles.effort]\nboss = "high"\n': "roles.effort.boss",
+            '[roles]\neffort = "high"\n': "roles.effort",
+        }
+        for text, needle in cases.items():
+            with self.subTest(text=text):
+                self.assertRejected(text, needle)
+                done = self.run_roles()
+                self.assertEqual(done.returncode, 2)
+                self.assertEqual(done.stdout, "")
+                self.assertIn(needle, done.stderr)
+
+    def test_effort_rejects_non_claude_roles(self):
+        cases = {
+            BASE + '[roles]\nimplementer = "mistral"\n[roles.effort]\n'
+            'implementer = "high"\n': "mistral",
+            '[roles]\nchecker = "script"\n[roles.effort]\nchecker = "low"\n': "script",
+            BASE + '[roles.implementer]\ndefault = "mistral"\n[roles.effort]\n'
+            'implementer = "high"\n': "mistral",
+        }
+        for text, value in cases.items():
+            with self.subTest(text=text):
+                self.assertRejected(text, "roles.effort.", value)
+        user = self.user('[roles.effort]\nimplementer = "high"\n')
+        self.project(BASE + '[roles]\nimplementer = "mistral"\n')
+        with self.assertRaises(models.ConfigError) as ctx:
+            models.load(self.repo)
+        self.assertIn(str(user), str(ctx.exception))
+        self.assertIn("roles.effort.implementer", str(ctx.exception))
+        self.assertIn("mistral", str(ctx.exception))
+
+    def test_load_shape_unchanged_with_effort(self):
+        self.project(
+            '[roles]\nplanner = "claude:opus"\n'
+            '[roles.effort]\nplanner = "high"\nreviewer = "max"\n'
+        )
+        loaded = models.load(self.repo)
+        self.assertEqual(len(loaded), 2)
+        self.assertEqual(loaded[1], {"planner": "claude:opus"})
+        self.assertNotIn("effort", loaded[1])
+        self.assertEqual(len(models.load(self.repo, with_rules=True)), 3)
+        self.assertEqual(
+            models.efforts(self.repo), {"planner": "high", "reviewer": "max"}
+        )
+
+    def test_select_reports_effort_and_override_is_null(self):
+        self.project(
+            BASE + '[roles]\nplanner = "claude:opus"\nchecker = "script"\n'
+            '[roles.effort]\nplanner = "high"\n'
+        )
+        picked = models.resolve_role_profile(self.repo, "planner")
+        self.assertEqual(picked["effort"], "high")
+        picked = models.resolve_role_profile(self.repo, "planner", override="mistral")
+        self.assertEqual(picked["kind"], "profile")
+        self.assertIsNone(picked["effort"])
+        picked = models.resolve_role_profile(self.repo, "checker")
+        self.assertEqual(picked["kind"], "script")
+        self.assertIsNone(picked["effort"])
+
+    def test_docstring_documents_effort(self):
+        self.assertIn("[roles.effort]", models.__doc__)
+        self.assertIn('"effort"', models.__doc__)
 
     def test_show_warns_on_anthropic_api_key_env(self):
         self.project(

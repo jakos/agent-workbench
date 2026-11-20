@@ -27,6 +27,30 @@ grants extra rounds or bypasses stop rules.
 See the [authorization procedure](skills/workflow/orchestration.md#enforced-transitions-when-policy-is-configured)
 for full commands and recovery. Bare consumer calls never issue authorization.
 
+## Claude subagent effort
+
+`[roles.effort]` in models.toml sets the reasoning effort of each Claude subagent role
+(`planner`, `implementer`, `checker`, `reviewer`, `backlog`). The levels are `low`,
+`medium`, `high`, `xhigh` and `max`:
+
+```toml
+[roles]
+planner = "claude:opus"
+
+[roles.effort]
+planner = "high"
+checker = "low"
+```
+
+The orchestrator passes the level as the `effort` argument of every subagent launch of
+that role; `models.py roles` and `models.py select` report it as `effort`. A role
+without an entry has `effort: null` and keeps today's behaviour: the subagent's own
+default applies. The table merges per role across the user and project files, and the
+project file wins. Effort applies only to Claude roles: a role whose value is a profile
+name or `script` (including `[roles.implementer]`) with an effort is a configuration
+error, so set effort in the same file that makes the role a Claude role. The session's
+`/effort` setting does not reach subagents, so use this table instead.
+
 ## Verification workers
 
 `[gates] workers` in models.toml is a positive integer and defaults to 1 (serial).
