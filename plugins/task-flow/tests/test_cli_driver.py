@@ -19,6 +19,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS))
@@ -412,14 +413,25 @@ class CliDriverTest(unittest.TestCase):
         self.assertIn("truncated", result.stdout)
 
     def test_scratch_files_removed_on_every_exit(self):
-        before = set(Path(tempfile.gettempdir()).glob("task-flow-cli-*"))
-        fake = fake_cli(self.tmp, "ok.py", "print('fine')\n")
-        run(fake, self.worktree)
-        fake2 = fake_cli(self.tmp, "boom.py", "import sys; sys.exit(7)\n")
-        result = run(fake2, self.worktree)
-        self.assertEqual(result.exit_code, 7)
-        after = set(Path(tempfile.gettempdir()).glob("task-flow-cli-*"))
-        self.assertEqual(after - before, set())
+        # A private temp root: with [gates] workers > 1, other suites run cli_driver
+        # at the same time and create their own task-flow-cli-* folders in the shared
+        # system temp directory, which a before/after listing there would count.
+        private = self.tmp / "private-temp"
+        private.mkdir()
+        with patch.object(tempfile, "tempdir", str(private)):
+            fake = fake_cli(self.tmp, "ok.py", "import sys\nprint(sys.argv[1])\n")
+            result = run(
+                fake, self.worktree, prompt_via="file", extra_args=["{prompt_file}"]
+            )
+            self.assertEqual(result.exit_code, 0, result.stderr)
+            prompt_file = Path(result.stdout.strip())
+            # the scratch folder really was created under the private root
+            self.assertEqual(prompt_file.parent.parent, private)
+            self.assertTrue(prompt_file.parent.name.startswith("task-flow-cli-"))
+            fake2 = fake_cli(self.tmp, "boom.py", "import sys; sys.exit(7)\n")
+            result = run(fake2, self.worktree)
+            self.assertEqual(result.exit_code, 7)
+        self.assertEqual(list(private.glob("task-flow-cli-*")), [])
 
     # ------------------------------------------------------------- redaction
 
