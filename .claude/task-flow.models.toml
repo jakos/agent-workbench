@@ -128,33 +128,38 @@ usage_format = "codex-jsonl"
 timeout_seconds = 1800
 
 [roles]
-planner = "codex-plan"
+# Claude subagents in the session (subscription) since 2026-11-20; the Codex profiles
+# above stay defined. To switch back: planner = "codex-plan", reviewer = "codex-review"
+# and the [roles.implementer] band table below instead of the implementer scalar.
+planner = "claude:opus"
+implementer = "claude:sonnet"
 backlog = "codex-backlog"
 checker = "script"
-reviewer = "codex-review"
+reviewer = "claude:opus"
 
-# Effort for the implementer follows the size of the approved plan: S and M use medium, L
-# (overflow) uses high. Bounds are inclusive and count the plan's Steps, AC labels,
-# verification commands and declared paths. The numbers are a first guess: tune them.
-[roles.implementer]
-default = "codex-impl"
-
-[roles.implementer.bands]
-S = "codex-impl"
-M = "codex-impl"
-L = "codex-impl-high"
-
-[roles.implementer.thresholds.S]
-steps = 3
-criteria = 3
-commands = 3
-declared_paths = 4
-
-[roles.implementer.thresholds.M]
-steps = 6
-criteria = 6
-commands = 6
-declared_paths = 10
+# Codex implementer routing, disabled while the implementer is a Claude subagent (a
+# scalar and the table form cannot both be set). Effort follows the size of the approved
+# plan: S and M use medium, L (overflow) uses high. Bounds are inclusive and count the
+# plan's Steps, AC labels, verification commands and declared paths.
+# [roles.implementer]
+# default = "codex-impl"
+#
+# [roles.implementer.bands]
+# S = "codex-impl"
+# M = "codex-impl"
+# L = "codex-impl-high"
+#
+# [roles.implementer.thresholds.S]
+# steps = 3
+# criteria = 3
+# commands = 3
+# declared_paths = 4
+#
+# [roles.implementer.thresholds.M]
+# steps = 6
+# criteria = 6
+# commands = 6
+# declared_paths = 10
 
 # Keep a generous timeout for each check while running independent checks concurrently.
 [gates]
