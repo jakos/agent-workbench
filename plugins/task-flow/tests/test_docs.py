@@ -6,6 +6,7 @@
 
 import re
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -107,6 +108,30 @@ def heading_anchors(text: str) -> set[str]:
 
 
 class DocumentationTest(unittest.TestCase):
+    def test_verification_workers_contract_and_template(self) -> None:
+        plugin = ROOT / "plugins/task-flow"
+        for name in ("README.md", "skills/workflow/orchestration.md"):
+            text = (plugin / name).read_text(encoding="utf-8")
+            with self.subTest(page=name):
+                for phrase in (
+                    "[gates] workers",
+                    "positive integer",
+                    "defaults to 1 (serial)",
+                    "project file",
+                    "overrides the user file",
+                    "input order",
+                    "Dependent commands require `workers = 1`",
+                    "full shared-list parity",
+                    "30 commands",
+                ):
+                    self.assertIn(phrase, text)
+        template = (plugin / "templates/models.toml").read_text(encoding="utf-8")
+        self.assertEqual(tomllib.loads(template)["gates"]["workers"], 1)
+        self.assertIn("project overrides the user value", template)
+        self.assertIn("Reports retain input order", template)
+        project = (ROOT / ".claude/task-flow.models.toml").read_text(encoding="utf-8")
+        self.assertEqual(tomllib.loads(project)["gates"]["workers"], 4)
+
     def test_session_authorization_skills_and_navigation(self) -> None:
         plugin = ROOT / "plugins" / "task-flow"
         for name in ("task-approve", "task-grant"):

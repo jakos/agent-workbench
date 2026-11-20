@@ -234,6 +234,31 @@ subcommand resolves any role with `--override` (`models.py select <role> [--over
 <profile>] --project <repo-root>`, printing `kind`, `method` (`claude` | `api` | `cli`),
 `profile`, `model`, `billing`).
 
+## Verification workers
+
+`[gates] workers` in models.toml is a positive integer and defaults to 1 (serial).
+The project file `.claude/task-flow.models.toml` overrides the user file
+`~/.claude/task-flow/models.toml` key by key. Script checks (`gates.py`), the shared
+CI entry point (`verify.py`) and `release.py verify` use this setting. The checker
+resolves it from the task's repository root; CI and release use their selected
+`--root`, regardless of the caller's working directory.
+
+Workers execute independent commands only. Dependent commands require `workers = 1`;
+there is no dependency scheduler. Reports retain input order, numbering, result
+classifications and failure excerpts despite out-of-order completion. A failed check
+or ordinary worker exception does not omit the other results. The default performs
+checks directly on the calling thread, without a thread pool.
+
+Configuration, list validation, authorization and sandbox capture stay before worker
+submission, where applicable. Sandboxed commands keep the captured policy and filtered
+environment; a sandbox error never starts a host command. Existing per-runner timeout
+and exit conventions remain unchanged.
+
+For this repository, full shared-list parity still applies: `.claude/task-flow.md`
+and `.claude/task-flow.release.toml` retain the same ordered 30 commands, including
+both pinned Ruff checks and plugin validation. `verify.py` refuses disagreement,
+missing, duplicate or stale test entries and self-reference before execution.
+
 ## Phase: new
 
 1. Read `.claude/task-flow.md` if it exists (format: `${CLAUDE_PLUGIN_ROOT}/templates/task-flow.md`).

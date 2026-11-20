@@ -156,8 +156,8 @@ criteria = 6
 commands = 6
 declared_paths = 10
 
-# verify.py runs the whole shared gate list in one command and takes longer than the
-# 600 s default on a Windows host (it timed out in the unattended-isolation baseline).
+# Keep a generous timeout for each check while running independent checks concurrently.
 [gates]
 command_timeout_seconds = 2400
+workers = 4
 

@@ -744,27 +744,63 @@ declared_paths = 5
         self.assertEqual(set(raw["gates"]), set(models.GATES_KEYS))
         self.assertEqual(
             models.gates(self.repo),
-            {"command_timeout_seconds": 600, "reviewer_independence": "warn"},
+            {
+                "command_timeout_seconds": 600,
+                "reviewer_independence": "warn",
+                "workers": 1,
+            },
         )
 
     def test_gates_default_timeout(self):
         self.assertEqual(
             models.gates(self.repo),
-            {"command_timeout_seconds": 600, "reviewer_independence": "warn"},
+            {
+                "command_timeout_seconds": 600,
+                "reviewer_independence": "warn",
+                "workers": 1,
+            },
         )
         self.assertEqual(
             models.gates(None),
-            {"command_timeout_seconds": 600, "reviewer_independence": "warn"},
+            {
+                "command_timeout_seconds": 600,
+                "reviewer_independence": "warn",
+                "workers": 1,
+            },
         )  # user file only, absent
         self.user("[gates]\ncommand_timeout_seconds = 300\n")
         self.assertEqual(
             models.gates(self.repo),
-            {"command_timeout_seconds": 300, "reviewer_independence": "warn"},
+            {
+                "command_timeout_seconds": 300,
+                "reviewer_independence": "warn",
+                "workers": 1,
+            },
         )
         self.assertEqual(
             models.gates(None),
-            {"command_timeout_seconds": 300, "reviewer_independence": "warn"},
+            {
+                "command_timeout_seconds": 300,
+                "reviewer_independence": "warn",
+                "workers": 1,
+            },
         )
+
+    def test_gate_workers_validation_and_precedence(self) -> None:
+        self.assertEqual(models.gates(self.repo)["workers"], 1)
+        self.user("[gates]\nworkers = 2\n")
+        self.assertEqual(models.gates(self.repo)["workers"], 2)
+        self.project("[gates]\nworkers = 4\n")
+        self.assertEqual(models.gates(self.repo)["workers"], 4)
+        self.assertEqual(models.gates(None)["workers"], 2)
+        self.project('[roles]\nchecker = "script"\n')
+        self.assertEqual(models.gates(self.repo)["workers"], 2)
+        for value in ("true", "false", "0", "-1", "1.5", "2.0", '"2"'):
+            with self.subTest(value=value):
+                self.project(f"[gates]\nworkers = {value}\n")
+                for call in (models.gates, models.load):
+                    with self.assertRaisesRegex(models.ConfigError, "gates.workers"):
+                        call(self.repo)
 
     def test_independence_validation_and_precedence(self) -> None:
         self.user('[gates]\nreviewer_independence = "different-model"\n')

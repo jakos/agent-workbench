@@ -20,11 +20,14 @@ import os
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS))
+import test_gates
 import verify
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -108,8 +111,40 @@ class RealRepoListTest(unittest.TestCase):
         gate = verify.gate_argvs(ROOT)
         self.assertEqual(verify.parity_problems(checks, gate), [])
         self.assertEqual(verify.test_guard_problems(checks, ROOT), [])
-        self.assertGreater(len(checks), 0)
+        self.assertEqual(len(checks), 30)
         listed = verify.listed_tests(checks)
+        inherited = [
+            "autopilot",
+            "docs",
+            "doctor",
+            "drivers",
+            "gates",
+            "guard",
+            "implement",
+            "launch",
+            "models",
+            "prune_task",
+            "release",
+            "rules",
+            "task_list",
+            "ci",
+            "sdlc_status",
+            "epics",
+            "task_record",
+            "cli_driver",
+            "role_run",
+            "role_contracts",
+            "risk",
+            "policy",
+            "metrics",
+            "phase_gate",
+            "publish_task",
+            "pr_review",
+            "sandbox",
+        ]
+        self.assertEqual(
+            listed, [f"plugins/task-flow/tests/test_{name}.py" for name in inherited]
+        )
         self.assertEqual(
             listed[listed.index("plugins/task-flow/tests/test_risk.py") + 1],
             "plugins/task-flow/tests/test_policy.py",
@@ -123,9 +158,31 @@ class RealRepoListTest(unittest.TestCase):
         checks = verify.load_checks(ROOT, None, "task-flow")
         ruff = [check for check in checks if check[:2] == ["uvx", "ruff==0.17.3"]]
         self.assertEqual(len(ruff), 2)
-        self.assertEqual(ruff[0][2], "check")
-        self.assertEqual(ruff[1][2:4], ["format", "--check"])
-        self.assertIn(["claude", "plugin", "validate", "."], checks)
+        paths = [
+            "plugins/task-flow/scripts",
+            "plugins/task-flow/tests",
+            "plugins/task-flow/bench",
+        ]
+        self.assertEqual(
+            ruff,
+            [
+                ["uvx", "ruff==0.17.3", "check", *paths],
+                ["uvx", "ruff==0.17.3", "format", "--check", *paths],
+            ],
+        )
+        self.assertEqual(checks[23:26], [*ruff, ["claude", "plugin", "validate", "."]])
+        expected_tests = [
+            ["uv", "run", "--script", path] for path in verify.listed_tests(checks)
+        ]
+        self.assertEqual(
+            checks,
+            [
+                *expected_tests[:23],
+                *ruff,
+                ["claude", "plugin", "validate", "."],
+                *expected_tests[23:],
+            ],
+        )
         for check in checks:
             self.assertNotIn(verify.SELF_PATH, check, "verify.py must not list itself")
 
@@ -189,6 +246,78 @@ class FixtureRunTest(unittest.TestCase):
 
     def case(self, name: str) -> Path:
         return self.base / name
+
+    def test_overlap_bounds_order_and_serial(self) -> None:
+        def batch(
+            items: list[int], run: Callable[[int], int], workers: int
+        ) -> list[int]:
+            checks = [[str(item)] for item in items]
+
+            def one(argv: list[str], *args: object) -> dict:
+                value = run(int(argv[0]))
+                return {
+                    "command": str(value),
+                    "argv": argv,
+                    "status": "PASS",
+                    "exit": 0,
+                    "detail": [],
+                    "duration": 0,
+                }
+
+            out = io.StringIO()
+            with patch.object(verify, "run_one", side_effect=one), redirect_stdout(out):
+                results = verify.run_all(checks, self.base, {}, 60, workers=workers)
+            self.assertEqual([result["argv"] for result in results], checks)
+            return [
+                int(line.removeprefix("PASS ")) for line in out.getvalue().splitlines()
+            ]
+
+        test_gates.assert_execution_contract(self, batch)
+
+    def test_selected_root_workers_and_mixed_results(self) -> None:
+        checks = [
+            [PY, "-c", "pass"],
+            [PY, "-c", "raise ValueError(123)"],
+            ["git", "commit"],
+            ["no-such-ci-program"],
+            ["worker-crash"],
+            [PY, "-c", "pass"],
+        ]
+        root = make_root(self.case("parallel"), checks, tests=())
+        (root / ".claude/task-flow.models.toml").write_text(
+            "[gates]\nworkers = 3\n", encoding="utf-8"
+        )
+        original = verify.run_one
+        original_batch = verify.run_all
+
+        def one(argv: list[str], *args: object) -> dict:
+            if argv == ["worker-crash"]:
+                raise RuntimeError("worker sentinel")
+            return original(argv, *args)
+
+        with (
+            patch.object(verify, "run_one", side_effect=one),
+            patch.object(verify, "run_all", wraps=original_batch) as batch,
+            patch.object(
+                verify.models, "user_file", return_value=self.base / "missing"
+            ),
+        ):
+            code, out, err = run_main(root)
+        self.assertEqual(code, 1, err)
+        self.assertEqual(batch.call_args.kwargs["workers"], 3)
+        headings = [
+            line.split()[0]
+            for line in out.splitlines()
+            if line and not line.startswith(" ")
+        ]
+        self.assertEqual(
+            headings, ["PASS", "FAIL", "ERROR", "NOTRUN", "ERROR", "PASS", "verify.py:"]
+        )
+        self.assertIn("ValueError: 123", out)
+        self.assertIn("denied:", out)
+        self.assertIn("program not found", out)
+        self.assertIn("worker error: worker sentinel", out)
+        self.assertIn("2 passed, 4 failed of 6 checks", out)
 
     def test_success_returns_zero(self):
         root = make_root(self.case("ok"), [[PY, "-c", "print('fine')"]], tests=())
@@ -328,6 +457,18 @@ class ConfigTest(unittest.TestCase):
 
     def case(self, name: str) -> Path:
         return self.base / name
+
+    def test_invalid_workers_refused_before_submission(self) -> None:
+        root = make_root(self.case("workers"), [[PY, "-c", "pass"]], tests=())
+        (root / ".claude/task-flow.models.toml").write_text(
+            "[gates]\nworkers = true\n", encoding="utf-8"
+        )
+        with patch.object(verify.check_executor, "execute") as submit:
+            code, out, err = run_main(root)
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("gates.workers", err)
+        submit.assert_not_called()
 
     def test_missing_release_config(self):
         root = make_root(self.case("noconfig"), [[PY, "-c", "pass"]])

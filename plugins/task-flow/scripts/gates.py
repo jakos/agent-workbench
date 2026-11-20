@@ -51,6 +51,11 @@ nothing changes.
 Timeout per command: `--timeout-seconds`, else `[gates] command_timeout_seconds` from
 models.toml, else 600.
 
+Independent commands use `[gates] workers` from the task's repository models.toml
+(positive integer, default 1, serial; project overrides user). Dependent commands
+require workers = 1. Configuration, authorization and sandbox capture precede worker
+submission. Results and reporting retain plan order even with concurrent execution.
+
 Excerpt (FAIL and timeout ERROR): from the cleaned output, in output order and without
 duplicates, every line matching a fixed pattern set (unittest/pytest summaries, exception
 and assertion lines, ruff diagnostics, compiler-style errors, `error:`/`fatal:` tool
@@ -86,6 +91,7 @@ import time
 from pathlib import Path
 
 import autopilot
+import check_executor
 import launch
 import models
 import rules
@@ -471,10 +477,11 @@ def run(args: argparse.Namespace) -> int:
             raise Refusal(f"--worktree is not a directory: {args.worktree}")
     repo_root = task_dir.parent.parent
     try:
+        gate_config = models.gates(repo_root)
         if args.timeout_seconds is not None:
             timeout = args.timeout_seconds
         else:
-            timeout = models.gates(repo_root)["command_timeout_seconds"]
+            timeout = gate_config["command_timeout_seconds"]
     except models.ConfigError as exc:
         raise Refusal(str(exc)) from exc
     try:
@@ -508,10 +515,26 @@ def run(args: argparse.Namespace) -> int:
         )
     except (phase_gate.Refusal, phase_gate.policy.ConfigError) as exc:
         raise Refusal(str(exc)) from exc
-    results = [
-        run_line(number, line, run_dir, env, timeout, policy, engine)
-        for number, line in enumerate(commands, 1)
-    ]
+
+    def run_command(item: tuple[int, str]) -> dict:
+        number, line = item
+        return run_line(number, line, run_dir, env, timeout, policy, engine)
+
+    def worker_error(item: tuple[int, str], exc: Exception) -> dict:
+        number, line = item
+        return {
+            "number": number,
+            "command": line,
+            "status": "ERROR",
+            "exit": None,
+            "duration": 0.0,
+            "detail": [f"worker error: {clean_output(str(exc))}"],
+            "not_run_reason": None,
+        }
+
+    results = check_executor.execute(
+        enumerate(commands, 1), run_command, worker_error, gate_config["workers"]
+    )
     out_path = task_dir / f"checks-{args.round}.md"
     out_path.write_text(
         render(args.round, run_dir, timeout, results, policy),

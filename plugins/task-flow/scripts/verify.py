@@ -38,6 +38,11 @@ closed, stdout and stderr go to one temporary file and the process tree is kille
 check never stops the run. The exit code is 0 only when every check passed; any
 failure, missing tool, launch error or timeout exits 1.
 
+Independent checks use `[gates] workers` from models.toml at the selected root
+(positive integer, default 1, serial; project overrides user). Dependent commands
+require workers = 1. Validation finishes before submission; results are printed in
+input order and every check retains a result, including ordinary worker errors.
+
 Exit codes: 0 all checks passed; 1 at least one check failed, was denied or refused,
 could not start, timed out, or its program was not found; 2 configuration or usage
 error (missing or malformed release config or gate block, list disagreement, missing,
@@ -55,8 +60,10 @@ import time
 from pathlib import Path
 
 import autopilot
+import check_executor
 import gates
 import launch
+import models
 import release
 import rules
 
@@ -278,13 +285,26 @@ def run_all(
     timeout: float,
     popen=subprocess.Popen,
     windows: bool | None = None,
+    workers: int = 1,
 ) -> list[dict]:
-    """Run every check in order and report each; a failure never stops the run."""
-    results: list[dict] = []
-    for check in checks:
-        result = run_one(check, run_dir, env, timeout, popen, windows)
+    """Run independent checks with bounded workers and report in input order."""
+
+    def run_command(check: list[str]) -> dict:
+        return run_one(check, run_dir, env, timeout, popen, windows)
+
+    def worker_error(check: list[str], exc: Exception) -> dict:
+        return {
+            "command": " ".join(check),
+            "argv": check,
+            "status": "ERROR",
+            "exit": None,
+            "duration": 0.0,
+            "detail": [f"worker error: {gates.clean_output(str(exc))}"],
+        }
+
+    results = check_executor.execute(checks, run_command, worker_error, workers)
+    for result in results:
         report(result)
-        results.append(result)
     return results
 
 
@@ -326,7 +346,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         checks = load_checks(root, config_path, args.target)
         gate = gate_argvs(root)
-    except release.ConfigError as exc:
+        workers = models.gates(root)["workers"]
+    except (release.ConfigError, models.ConfigError) as exc:
         print(f"verify.py: {exc}", file=sys.stderr)
         return 2
     problems = parity_problems(checks, gate) + test_guard_problems(checks, root)
@@ -340,7 +361,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    results = run_all(checks, root, os.environ, args.timeout_seconds)
+    results = run_all(checks, root, os.environ, args.timeout_seconds, workers=workers)
     failed = [result for result in results if result["status"] != "PASS"]
     print(
         f"verify.py: {len(results) - len(failed)} passed, {len(failed)} failed "

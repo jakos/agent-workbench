@@ -15,7 +15,10 @@
      list and the release list are one shared list, not two. There is no shell glob: a
      new plugins/task-flow/tests/test_*.py file is added here and there by hand. The
      Ruff commands pin the exact version (0.17.3) whose settings the committed ruff.toml
-     records, so a clean runner matches a local run. -->
+     records, so a clean runner matches a local run. [gates] workers = 4 in the project
+     models file bounds independent commands; reports retain input order. Dependent
+     commands require workers = 1 (the serial default). Full shared-list parity and
+     all 30 commands remain required. -->
 
 ### python, docs, config, generic
 ```
