@@ -15,6 +15,12 @@ Usage (from the repository root; stdlib only, started by `uv run --script`):
 `--target` is optional when the config has exactly one target. Exit codes: 0 ok,
 1 a refusal or a failed check (nothing changed), 2 a config or usage error.
 
+`verify` uses `[gates] workers` from models.toml at `--root`: a positive integer,
+default 1 (serial), with project values overriding user values. Workers run independent
+commands only; dependent commands require workers = 1. Configuration is validated
+before submission. Reporting stays in input order, with a result for every command
+even after failures or ordinary worker exceptions. Check and apply are unchanged.
+
 Decisions, in short form:
 
 1. The config is a TOML file (default `.claude/task-flow.release.toml`, override with
@@ -67,6 +73,8 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+import check_executor
+import models
 from rules import check_command
 
 DEFAULT_CONFIG = (".claude", "task-flow.release.toml")
@@ -781,39 +789,53 @@ def run_check(root: Path, name: str, target: dict, args) -> dict:
     return {key: value for key, value in state.items() if not key.startswith("_")}
 
 
+def run_verify_one(root: Path, argv: list[str]) -> tuple[bool, list[str]]:
+    """Run one release check with its existing decision order and output excerpt."""
+    command = " ".join(argv)
+    executable = shutil.which(argv[0])
+    if executable is None:
+        return False, [f"ERROR {command}: {argv[0]} not found on PATH"]
+    reason = check_command(command, "checker")
+    if reason is not None:
+        return False, [f"DENIED {command}: {reason}"]
+    result = subprocess.run(
+        [executable, *argv[1:]],
+        cwd=root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if result.returncode == 0:
+        return True, [f"PASS {command}"]
+    output = (result.stdout or "") + (result.stderr or "")
+    return False, [
+        f"FAIL {command} (exit {result.returncode})",
+        *(f"    {line}" for line in output.splitlines()[-30:]),
+    ]
+
+
 def run_verify(root: Path, target: dict) -> int:
-    """Run every configured check as an argument list; print one line per check."""
-    passed = 0
-    failed = 0
-    for argv in target["checks"]:
-        command = " ".join(argv)
-        executable = shutil.which(argv[0])
-        if executable is None:
-            print(f"ERROR {command}: {argv[0]} not found on PATH")
-            failed += 1
-            continue
-        reason = check_command(command, "checker")
-        if reason is not None:
-            print(f"DENIED {command}: {reason}")
-            failed += 1
-            continue
-        result = subprocess.run(
-            [executable, *argv[1:]],
-            cwd=root,
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
-        if result.returncode == 0:
-            print(f"PASS {command}")
-            passed += 1
-        else:
-            print(f"FAIL {command} (exit {result.returncode})")
-            output = (result.stdout or "") + (result.stderr or "")
-            for line in output.splitlines()[-30:]:
-                print(f"    {line}")
-            failed += 1
+    """Run independent checks with bounded workers; print in configuration order."""
+    try:
+        workers = models.gates(root)["workers"]
+    except models.ConfigError as exc:
+        raise ConfigError(str(exc)) from exc
+
+    def run_command(argv: list[str]) -> tuple[bool, list[str]]:
+        return run_verify_one(root, argv)
+
+    def worker_error(argv: list[str], exc: Exception) -> tuple[bool, list[str]]:
+        return False, [f"ERROR {' '.join(argv)}: worker error: {exc}"]
+
+    results = check_executor.execute(
+        target["checks"], run_command, worker_error, workers
+    )
+    for _passed, lines in results:
+        for line in lines:
+            print(line)
+    passed = sum(passed for passed, _lines in results)
+    failed = len(results) - passed
     if failed:
         print(f"failed: {failed} of {len(target['checks'])} checks")
         return 1

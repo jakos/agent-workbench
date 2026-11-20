@@ -7,19 +7,120 @@
 Run: uv run --script plugins/task-flow/tests/test_release.py
 """
 
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 SCRIPT = SCRIPTS / "release.py"
 TEMPLATE = Path(__file__).resolve().parent.parent / "templates" / "release.toml"
 sys.path.insert(0, str(SCRIPTS))
 import release
+import test_gates
+
+
+class ReleaseSchedulingTest(unittest.TestCase):
+    def test_overlap_bounds_order_and_serial(self) -> None:
+        def batch(
+            items: list[int], run: Callable[[int], int], workers: int
+        ) -> list[int]:
+            root = Path("selected-root")
+
+            def one(root: Path, argv: list[str]) -> tuple[bool, list[str]]:
+                return True, [str(run(int(argv[0])))]
+
+            out = io.StringIO()
+            with (
+                patch.object(
+                    release.models, "gates", return_value={"workers": workers}
+                ) as config,
+                patch.object(release, "run_verify_one", side_effect=one),
+                redirect_stdout(out),
+            ):
+                self.assertEqual(
+                    release.run_verify(root, {"checks": [[str(i)] for i in items]}), 0
+                )
+            config.assert_called_once_with(root)
+            return [int(line) for line in out.getvalue().splitlines()[:-1]]
+
+        test_gates.assert_execution_contract(self, batch)
+
+    def test_selected_root_configuration_and_mixed_results(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / ".claude").mkdir()
+            (root / ".claude/task-flow.models.toml").write_text(
+                "[gates]\nworkers = 3\n", encoding="utf-8"
+            )
+            checks = [
+                [sys.executable, "-c", "pass"],
+                [sys.executable, "-c", "raise ValueError(123)"],
+                ["git", "push"],
+                ["no-such-release-program"],
+                ["worker-crash"],
+                [sys.executable, "-c", "pass"],
+            ]
+            original = release.run_verify_one
+
+            def one(root: Path, argv: list[str]) -> tuple[bool, list[str]]:
+                if argv == ["worker-crash"]:
+                    raise RuntimeError("worker sentinel")
+                return original(root, argv)
+
+            out = io.StringIO()
+            with (
+                patch.object(
+                    release.models, "user_file", return_value=root / "missing"
+                ),
+                patch.object(release, "run_verify_one", side_effect=one),
+                patch.object(
+                    release.check_executor,
+                    "execute",
+                    wraps=release.check_executor.execute,
+                ) as batch,
+                redirect_stdout(out),
+            ):
+                code = release.run_verify(root, {"checks": checks})
+            self.assertEqual(batch.call_args.args[3], 3)
+            self.assertEqual(code, 1)
+            text = out.getvalue()
+            headings = [
+                line.split()[0]
+                for line in text.splitlines()
+                if line and not line.startswith(" ")
+            ]
+            self.assertEqual(
+                headings,
+                ["PASS", "FAIL", "DENIED", "ERROR", "ERROR", "PASS", "failed:"],
+            )
+            self.assertIn("ValueError: 123", text)
+            self.assertIn("worker error: worker sentinel", text)
+            self.assertTrue(text.endswith("failed: 4 of 6 checks\n"))
+
+    def test_invalid_workers_refuse_before_submission(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / ".claude").mkdir()
+            (root / ".claude/task-flow.models.toml").write_text(
+                "[gates]\nworkers = 0\n", encoding="utf-8"
+            )
+            with (
+                patch.object(
+                    release.models, "user_file", return_value=root / "missing"
+                ),
+                patch.object(release.check_executor, "execute") as submit,
+            ):
+                with self.assertRaisesRegex(release.ConfigError, "gates.workers"):
+                    release.run_verify(root, {"checks": [[sys.executable, "-V"]]})
+                submit.assert_not_called()
 
 
 def toml_str(value: str) -> str:

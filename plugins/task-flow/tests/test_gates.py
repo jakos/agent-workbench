@@ -18,18 +18,266 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import unittest.mock
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import ClassVar
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 SCRIPT = SCRIPTS / "gates.py"
 sys.path.insert(0, str(SCRIPTS))
+import check_executor
 import gates
 
 PLAN_HEAD = "# Plan: demo\n## Goal\nDo it.\n## Verification commands\n```\n"
+
+
+def assert_execution_contract(
+    case: unittest.TestCase,
+    run_batch: Callable[[list[int], Callable[[int], int], int], list[int]],
+) -> None:
+    """Force overlap and reverse completion, then bound a larger queue; no speed test."""
+    started = [threading.Event() for _ in range(3)]
+    release = [threading.Event() for _ in range(3)]
+    completed = [threading.Event() for _ in range(3)]
+    order: list[int] = []
+
+    def reverse(item: int) -> int:
+        started[item].set()
+        if not release[item].wait(10):
+            raise AssertionError("test did not release worker")
+        order.append(item)
+        completed[item].set()
+        return item
+
+    with ThreadPoolExecutor(max_workers=1) as controller:
+        future = controller.submit(run_batch, [0, 1, 2], reverse, 3)
+        try:
+            for event in started:
+                case.assertTrue(event.wait(10), "workers must overlap")
+            for item in (2, 1, 0):
+                release[item].set()
+                case.assertTrue(completed[item].wait(10))
+        finally:
+            for event in release:
+                event.set()
+        case.assertEqual(future.result(timeout=10), [0, 1, 2])
+    case.assertEqual(order, [2, 1, 0])
+
+    lock = threading.Lock()
+    full = threading.Event()
+    unblock = threading.Event()
+    active = 0
+    maximum = 0
+    entered: list[int] = []
+
+    def bounded(item: int) -> int:
+        nonlocal active, maximum
+        with lock:
+            active += 1
+            maximum = max(maximum, active)
+            entered.append(item)
+            if active == 3:
+                full.set()
+        try:
+            if not unblock.wait(10):
+                raise AssertionError("test did not release workers")
+            return item
+        finally:
+            with lock:
+                active -= 1
+
+    with ThreadPoolExecutor(max_workers=1) as controller:
+        future = controller.submit(run_batch, list(range(8)), bounded, 3)
+        try:
+            case.assertTrue(full.wait(10))
+            with lock:
+                case.assertEqual(len(entered), 3)
+        finally:
+            unblock.set()
+        case.assertEqual(future.result(timeout=10), list(range(8)))
+    case.assertEqual(maximum, 3)
+
+    serial: list[int] = []
+    caller = threading.get_ident()
+
+    def one(item: int) -> int:
+        case.assertEqual(threading.get_ident(), caller)
+        case.assertEqual(item, len(serial))
+        serial.append(item)
+        return item
+
+    case.assertEqual(run_batch([0, 1, 2], one, 1), [0, 1, 2])
+    case.assertEqual(serial, [0, 1, 2])
+
+
+class ExecutorTest(unittest.TestCase):
+    def test_overlap_bounds_order_and_serial_fallback(self) -> None:
+        def unexpected(item: int, exc: Exception) -> int:
+            raise AssertionError(f"worker {item}: {exc}") from exc
+
+        def batch(
+            items: list[int], run: Callable[[int], int], workers: int
+        ) -> list[int]:
+            return check_executor.execute(items, run, unexpected, workers)
+
+        assert_execution_contract(self, batch)
+
+    def test_worker_failure_retains_every_result(self) -> None:
+        def run(item: int) -> str:
+            if item == 1:
+                raise OSError("ordinary failure")
+            return str(item)
+
+        for workers in (1, 3):
+            self.assertEqual(
+                check_executor.execute(
+                    range(4), run, lambda item, exc: f"{item}: {exc}", workers
+                ),
+                ["0", "1: ordinary failure", "2", "3"],
+            )
+        self.assertEqual(
+            check_executor.execute([], run, lambda item, exc: "error", 2), []
+        )
+
+    def test_invalid_worker_count_is_refused_before_work(self) -> None:
+        run = unittest.mock.Mock()
+        for workers in (True, False, 0, -1, 1.5):
+            with self.subTest(workers=workers), self.assertRaises(ValueError):
+                check_executor.execute([1], run, run, workers)
+        run.assert_not_called()
+
+
+class GatesSchedulingTest(unittest.TestCase):
+    def setUp(self) -> None:
+        GatesTest.setUp(self)
+
+    def write_plan(self, commands: list[str]) -> None:
+        GatesTest.write_plan(self, commands)
+
+    def checks(self) -> str:
+        return GatesTest.checks(self)
+
+    def rows(self, text: str) -> list[str]:
+        return GatesTest.rows(self, text)
+
+    def args(self) -> object:
+        import argparse
+
+        return argparse.Namespace(
+            task_dir=str(self.task),
+            worktree=str(self.worktree),
+            round=1,
+            timeout_seconds=60,
+        )
+
+    def configure_workers(self, workers: int) -> None:
+        path = self.repo / ".claude/task-flow.models.toml"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(f"[gates]\nworkers = {workers}\n", encoding="utf-8")
+
+    def test_runner_overlap_bounds_order_and_serial(self) -> None:
+        import contextlib
+        import io
+
+        import phase_gate
+
+        def batch(
+            items: list[int], run: Callable[[int], int], workers: int
+        ) -> list[int]:
+            self.write_plan([str(item) for item in items])
+            self.configure_workers(workers)
+
+            def line(number: int, command: str, *args: object) -> dict:
+                value = run(int(command))
+                return {
+                    "number": number,
+                    "command": str(value),
+                    "status": "PASS",
+                    "exit": 0,
+                    "duration": 0,
+                    "detail": [],
+                    "not_run_reason": None,
+                }
+
+            with (
+                unittest.mock.patch.object(gates, "run_line", side_effect=line),
+                unittest.mock.patch.object(
+                    gates.models, "user_file", return_value=self.home / "missing"
+                ),
+                unittest.mock.patch.object(phase_gate, "decide"),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(gates.run(self.args()), 0)
+            return [
+                int(row.split(" | ")[1].strip("`")) for row in self.rows(self.checks())
+            ]
+
+        assert_execution_contract(self, batch)
+
+    def test_mixed_results_and_exception_are_complete_and_ordered(self) -> None:
+        import contextlib
+        import io
+
+        import phase_gate
+
+        self.configure_workers(3)
+        commands = [
+            f'{quoted(sys.executable)} -c "pass"',
+            f'{quoted(sys.executable)} -c "raise ValueError(123)"',
+            "git commit",
+            "no-such-gate-program",
+            "worker-crash",
+        ]
+        self.write_plan(commands)
+        original = gates.run_line
+
+        def run(number: int, line: str, *args: object) -> dict:
+            if line == "worker-crash":
+                raise RuntimeError("worker sentinel")
+            return original(number, line, *args)
+
+        with (
+            unittest.mock.patch.object(gates, "run_line", side_effect=run),
+            unittest.mock.patch.object(
+                gates.models, "user_file", return_value=self.home / "missing"
+            ),
+            unittest.mock.patch.object(phase_gate, "decide"),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(gates.run(self.args()), 0)
+        text = self.checks()
+        rows = self.rows(text)
+        self.assertEqual(
+            [row.split(" | ")[2] for row in rows], ["PASS", "FAIL", "ERROR", "ERROR"]
+        )
+        self.assertEqual(
+            [row.split(" | ")[0] for row in rows], ["| 1", "| 2", "| 3", "| 5"]
+        )
+        self.assertIn("ValueError: 123", text)
+        self.assertIn("denied:", text)
+        self.assertIn("4. `no-such-gate-program`", text)
+        self.assertIn("worker error: worker sentinel", text)
+
+    def test_invalid_workers_refuse_before_submission_even_with_timeout_override(
+        self,
+    ) -> None:
+        self.write_plan(["python -V"])
+        self.configure_workers(0)
+        with (
+            unittest.mock.patch.object(
+                gates.models, "user_file", return_value=self.home / "missing"
+            ),
+            unittest.mock.patch.object(gates.check_executor, "execute") as submit,
+        ):
+            with self.assertRaisesRegex(gates.Refusal, "gates.workers"):
+                gates.run(self.args())
+            submit.assert_not_called()
+        self.assertFalse((self.task / "checks-1.md").exists())
 
 
 def quoted(path) -> str:
@@ -561,6 +809,25 @@ class SandboxGatesTest(unittest.TestCase):
         self.assertIn("not implemented yet", done.stderr)
         self.assertFalse((self.task / "checks-1.md").exists())
 
+    def test_concurrent_sandbox_commands_remain_filtered_and_isolated(self) -> None:
+        self.enable()
+        path = self.repo / ".claude/task-flow.models.toml"
+        with path.open("a", encoding="utf-8") as config:
+            config.write("\n[gates]\nworkers = 3\n")
+        self.write_plan([f'python -c "{ENV_PROBE}"' for _ in range(3)])
+        fake = self.run_in_process()
+        containers = fake.containers()
+        self.assertEqual(len(containers), 3)
+        self.assertEqual(len({item["name"] for item in containers}), 3)
+        for item in containers:
+            self.assertNotIn("SENTINEL_PROVIDER_TOKEN", item["env"])
+            self.assertNotIn("HTTPS_PROXY", item["env"])
+            self.assertEqual(item["env"]["SANDBOX_VISIBLE"], "visible")
+            self.assertEqual(Path(item["mounts"]["/work"]), self.worktree.resolve())
+        self.assertEqual(
+            [row.split(" | ")[2] for row in self.rows(self.checks())], ["PASS"] * 3
+        )
+
 
 from test_phase_gate import GateFixture
 
@@ -578,10 +845,14 @@ class WorkflowPreflightTest(GateFixture):
                 round=number,
                 timeout_seconds=1,
             )
-            with patch.object(gates, "run_line") as run_line:
+            with (
+                patch.object(gates, "run_line") as run_line,
+                patch.object(gates.check_executor, "execute") as submit,
+            ):
                 with self.assertRaises(gates.Refusal):
                     gates.run(args)
                 run_line.assert_not_called()
+                submit.assert_not_called()
                 self.assertFalse((self.task / f"checks-{number}.md").exists())
 
 

@@ -15,6 +15,8 @@ not pass silently. With neither file present there are no profiles and no roles.
 
 [gates] keys:
 
+  workers                     positive integer, independent verification commands
+                              across gates.py, verify.py and release.py verify (default 1)
   command_timeout_seconds     number > 0, per verification command run by
                               scripts/gates.py (default 600)
 
@@ -165,7 +167,7 @@ PRODUCER_ROLES = {"planner", "backlog", "reviewer"}
 # Strict keys of the alternative implementer table. Unknown keys remain errors.
 ROLE_TABLE_KEYS = {"implementer": {"default", "bands", "thresholds"}}
 DIMENSIONS = ("steps", "criteria", "commands", "declared_paths")
-GATES_KEYS = {"command_timeout_seconds", "reviewer_independence"}
+GATES_KEYS = {"command_timeout_seconds", "reviewer_independence", "workers"}
 GATES_DEFAULT_TIMEOUT = 600
 CLAUDE_VALUES = {"claude", "claude:opus", "claude:sonnet", "claude:haiku"}
 PROMPT_VIAS = {"stdin", "file", "arg"}
@@ -488,7 +490,10 @@ def _validate_gates(path: Path, gates) -> dict:
                 )
             continue
         try:
-            _check_num(0, strict=True)(value)
+            if key == "workers":
+                _check_int(1)(value)
+            else:
+                _check_num(0, strict=True)(value)
         except (ValueError, TypeError) as exc:
             raise ConfigError(f"{path}: gates.{key}: {exc}") from exc
     return gates
@@ -1118,7 +1123,7 @@ def verify_read_only_command(command: list[str]) -> str | None:
 
 
 def gates(project_root: Path | None = None) -> dict:
-    """The merged [gates] table: {"command_timeout_seconds": <value or 600>}.
+    """The merged [gates] table, including workers (default 1, serial).
 
     Sources are the user file and, when given, the project file; merged key by key,
     the project wins, exactly like [roles]. An invalid [gates] table raises ConfigError.
@@ -1135,6 +1140,7 @@ def gates(project_root: Path | None = None) -> dict:
             "command_timeout_seconds", GATES_DEFAULT_TIMEOUT
         ),
         "reviewer_independence": merged.get("reviewer_independence", "warn"),
+        "workers": merged.get("workers", 1),
     }
 
 

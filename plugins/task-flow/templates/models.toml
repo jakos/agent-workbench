@@ -121,6 +121,10 @@ reviewer = "claude:opus"      # reviewer agent's frontmatter default: opus
 backlog = "claude:opus"       # backlog agent's frontmatter default: opus
 
 [gates]
+# Positive integer; defaults to 1 (serial). The project overrides the user value.
+# gates.py, verify.py and release.py verify bound independent commands with this key.
+# Reports retain input order; dependent commands require workers = 1.
+workers = 1                            # independent checks; 1 keeps dependent commands serial
 reviewer_independence = "warn"           # warn, different-model or different-provider
 command_timeout_seconds = 600           # per verification command run by scripts/gates.py (default 600)
 

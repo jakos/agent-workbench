@@ -23,9 +23,12 @@ import threading
 import time
 import unittest
 import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
+
+from fixture_helpers import RepositoryTemplate
 
 PLUGIN = Path(__file__).resolve().parent.parent
 SCRIPT = PLUGIN / "scripts" / "implement.py"
@@ -172,16 +175,19 @@ class FakeServer:
                 pass
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread = threading.Thread(
+            target=self.httpd.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+        )
         self.thread.start()
 
     @property
     def url(self):
         return f"http://127.0.0.1:{self.httpd.server_address[1]}/v1"
 
-    def close(self):
+    def close(self) -> None:
         self.httpd.shutdown()
         self.httpd.server_close()
+        self.thread.join(timeout=5)
 
     def tool_results(self, index):
         messages = self.requests[index]["body"]["messages"]
@@ -209,30 +215,40 @@ def tree_snapshot(path, skip=()):
     return files
 
 
+def build_round_repository(repo: Path) -> None:
+    """Only the common initial commit; each test registers its own linked worktree."""
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "config", "user.email", "t@example.com")
+    git(repo, "config", "user.name", "t")
+    git(repo, "config", "core.autocrlf", "false")
+    (repo / "README.md").write_text("hello\n", encoding="utf-8", newline="")
+    (repo / "src").mkdir()
+    (repo / "src/app.py").write_text(
+        "def foo():\n    return 1\n", encoding="utf-8", newline=""
+    )
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "init")
+
+
 @unittest.skipUnless(shutil.which("git"), "git is not installed")
 class RoundFixture(unittest.TestCase):
     """Temp git repo with a worktree and .work/t1 fixtures, a scripted fake server,
     and the helpers to configure a profile and run one round by subprocess."""
 
-    def setUp(self):
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.repository_template = RepositoryTemplate(build_round_repository)
+        cls.addClassCleanup(cls.repository_template.close)
+
+    def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         root = Path(self._tmp.name).resolve()  # expand Windows 8.3 short names
         self.home = root / "home"
         self.home.mkdir()
         self.repo = root / "repo"
-        self.repo.mkdir()
-        git(self.repo, "init", "-q", "-b", "main")
-        git(self.repo, "config", "user.email", "t@example.com")
-        git(self.repo, "config", "user.name", "t")
-        git(self.repo, "config", "core.autocrlf", "false")
-        (self.repo / "README.md").write_text("hello\n", encoding="utf-8", newline="")
-        (self.repo / "src").mkdir()
-        (self.repo / "src" / "app.py").write_text(
-            "def foo():\n    return 1\n", encoding="utf-8", newline=""
-        )
-        git(self.repo, "add", "-A")
-        git(self.repo, "commit", "-q", "-m", "init")
+        self.repository_template.copy_to(self.repo)
         self.task = self.repo / ".work" / "t1"
         self.task.mkdir(parents=True)
         self.write_task("plan.md", PLAN)
@@ -409,6 +425,49 @@ class RoundFixture(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("git"), "git is not installed")
 class ImplementTest(RoundFixture):
+    def test_copied_round_fixtures_keep_history_homes_tasks_and_servers_independent(
+        self,
+    ) -> None:
+        peer = RoundFixture(
+            "test_root_scalar_implementer_wins_over_worktree_configuration"
+        )
+        peer.repository_template = self.repository_template
+        self.addCleanup(peer.doCleanups)
+        peer.setUp()
+        self.addCleanup(peer.tearDown)
+        self.assertEqual(self.head, peer.head)
+        git(self.repo, "config", "fixture.marker", "changed")
+        self.assertNotIn("fixture.marker", git(peer.repo, "config", "--list"))
+        (self.worktree / "src/app.py").write_text("changed = True\n", encoding="utf-8")
+        git(self.worktree, "add", "src/app.py")
+        self.assertEqual(git(peer.worktree, "diff", "--cached", "--name-only"), "")
+        git(self.worktree, "commit", "-qm", "fixture isolation")
+        self.assertEqual(git(peer.repo, "rev-parse", "HEAD").strip(), peer.head)
+        self.assertEqual(git(peer.repo, "rev-list", "--all", "--count").strip(), "1")
+        self.assertEqual(
+            git(peer.worktree, "show", "HEAD:src/app.py"), "def foo():\n    return 1\n"
+        )
+        self.assertNotIn(
+            str(self.worktree), git(peer.repo, "worktree", "list", "--porcelain")
+        )
+        (self.home / "settings").write_text("private", encoding="utf-8")
+        self.assertFalse((peer.home / "settings").exists())
+        self.write_task("plan.md", "changed plan")
+        self.assertEqual((peer.task / "plan.md").read_text(encoding="utf-8"), PLAN)
+        first = self.server([reply(content="first")])
+        second = peer.server([reply(content="second")])
+        self.assertNotEqual(first.url, second.url)
+        for server, content in ((first, "first"), (second, "second")):
+            with urllib.request.urlopen(
+                server.url + "/chat/completions", data=b'{"messages": []}', timeout=5
+            ) as response:
+                body = json.load(response)
+            self.assertEqual(body["choices"][0]["message"]["content"], content)
+            if server is first:
+                self.assertEqual(second.requests, [])
+        self.assertEqual(len(first.requests), 1)
+        self.assertEqual(len(second.requests), 1)
+
     # ------------------------------------------------------------------ happy path
 
     def test_round1_writes_stages_and_logs(self):
