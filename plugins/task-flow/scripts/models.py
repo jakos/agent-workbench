@@ -39,7 +39,8 @@ billing = "subscription" on driver "cli"):
                               own -m argument in `command`)
   api_key_env                 NAME of an environment variable holding the key
                               (required unless billing = "local", and on "cli"
-                              only with billing = "api")
+                              only with billing = "api", where the same name must
+                              also be listed in pass_env)
   billing                     "subscription" | "api" | "local"
   max_turns                   int > 0                       (default 60; refused when
                               set on "cli": the CLI owns its internal loop)
@@ -111,7 +112,10 @@ billing = "subscription" on driver "cli"):
                               plain stdout message is used ("none")
   pass_env                    list of environment-variable NAMES whose values are
                               additionally passed to the CLI (default []); the
-                              runner's allowlist still applies first
+                              runner's allowlist still applies first. With
+                              billing = "api" it must contain api_key_env: that
+                              is the only way the key reaches the CLI, which
+                              would otherwise fall back to its saved login
   limit_patterns              list of regular expressions; a match against the
                               bounded stderr or final output makes this attempt
                               unavailable and advances the fallback chain
@@ -591,6 +595,13 @@ def _validate_cli_profile(name, table, full, key_where, where) -> None:
             raise ConfigError(
                 f'{where}: profiles.{name}.api_key_env: required when driver = "cli" '
                 'and billing = "api"'
+            )
+        if full["api_key_env"] not in full["pass_env"]:
+            raise ConfigError(
+                f"{where}: profiles.{name}.pass_env: must contain "
+                f"{full['api_key_env']} (the profile's api_key_env); the CLI child "
+                "environment is an allowlist, so without it the CLI never sees the key "
+                "and would use its saved login instead"
             )
     elif "api_key_env" in table:
         raise ConfigError(

@@ -195,6 +195,25 @@ class OpenAILoopTest(unittest.TestCase):
                 }
             )
 
+    def test_openai_usage_reasoning_tokens_billed_once_as_output(self):
+        # OpenAI reports reasoning tokens INSIDE completion_tokens; adding them again
+        # would bill them twice
+        driver = drivers.get("openai-loop")
+        usage = driver.usage(
+            {
+                "usage": {
+                    "prompt_tokens": 1200,
+                    "completion_tokens": 900,
+                    "total_tokens": 2100,
+                    "prompt_tokens_details": {"cached_tokens": 1000},
+                    "completion_tokens_details": {"reasoning_tokens": 700},
+                }
+            }
+        )
+        self.assertEqual(
+            usage, {"input": 1200, "cached": 1000, "cache_write": 0, "output": 900}
+        )
+
 
 class AnthropicLoopTest(unittest.TestCase):
     def anthropic(self, **overrides):

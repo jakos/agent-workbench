@@ -51,6 +51,41 @@ name or `script` (including `[roles.implementer]`) with an effort is a configura
 error, so set effort in the same file that makes the role a Claude role. The session's
 `/effort` setting does not reach subagents, so use this table instead.
 
+## OpenAI API billing
+
+Any profile-capable role (planner, implementer, reviewer, backlog) can run OpenAI or
+Codex models on per-token API billing instead of a subscription, through two paths.
+`templates/models.toml` carries a commented example of each, and this repository's
+`.claude/task-flow.models.toml` defines `openai-api` and `codex-api` as unused examples
+(no role points at them).
+
+- `openai-loop` against `https://api.openai.com/v1`: `billing = "api"`,
+  `api_key_env = "OPENAI_API_KEY"`, `max_tokens_param = "max_completion_tokens"` and
+  the `price_*` keys. The Bearer key is read from that variable at run time.
+- Codex CLI (`driver = "cli"`): `billing = "api"`, `api_key_env = "CODEX_API_KEY"`
+  (`codex exec` reads that variable instead of the saved `codex login`) and
+  `usage_format = "codex-jsonl"` plus the `price_*` keys for a cost figure.
+
+`api_key_env` is only the name of an environment variable; no key ever belongs in a
+file. For a CLI profile the child environment is an allowlist, so `pass_env` must
+contain the `api_key_env` name; models.py refuses the profile otherwise, because the CLI
+would silently fall back to its saved login while task-flow accounted API cost. The
+reverse is also a risk: a key named in `pass_env` of a `billing = "subscription"` profile
+would be billed per token and still be accounted as unknown, so keep keys on API profiles.
+
+Cost is the configured prices times the usage the provider reports (reasoning tokens are
+part of the output count and are billed once). On `driver = "cli"` it is `null` (unknown,
+never zero) when the CLI reports no usage or no `price_*` key is set. On `openai-loop`
+there is no such guard: missing or all-zero `price_*` keys give a cost of 0 USD, so
+`max_cost_usd` can never act (set the prices; `doctor` warns about it). A reply without
+a `usage` object counts as zero tokens for the implementer (`implement.py`), but for the
+planner, reviewer and backlog (`role_runtime.py`) it makes the run's cost `null`
+(unknown), after which `max_cost_usd` can no longer act. `max_cost_usd` is enforced per
+turn on `openai-loop`, and cumulative across the fallback chain. It is refused on
+`driver = "cli"`: the CLI owns its loop and reports usage only when it ends, so the
+bounds there are `timeout_seconds`, the per-run cost recorded in `impl-<n>.json` and
+`role-*.json`, and the autopilot `External USD` accounting.
+
 ## Verification workers
 
 `[gates] workers` in models.toml is a positive integer and defaults to 1 (serial).

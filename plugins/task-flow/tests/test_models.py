@@ -1133,6 +1133,90 @@ limit_patterns = ["rate limit reached"]
             "api_key_env",
         )
 
+    def test_cli_api_billing_requires_api_key_env_in_pass_env(self):
+        # the CLI child environment is an allowlist: a key that is not in pass_env never
+        # reaches the CLI, which would then use its saved login instead
+        self.project(self.CLI_API)
+        self.assertEqual(
+            models.load(self.repo)[0]["codex-api"]["pass_env"], ["CODEX_API_KEY"]
+        )
+        for label, text in {
+            "missing": self.CLI_API.replace('pass_env = ["CODEX_API_KEY"]\n', ""),
+            "other variable": self.CLI_API.replace(
+                'pass_env = ["CODEX_API_KEY"]', 'pass_env = ["OTHER_KEY"]'
+            ),
+        }.items():
+            with self.subTest(label=label):
+                self.assertRejected(
+                    text, "profiles.codex-api.pass_env", "CODEX_API_KEY", "saved login"
+                )
+
+    def test_project_openai_api_example_profiles_load_and_stay_unused(self):
+        repo_file = SCRIPTS.parent.parent.parent / ".claude" / "task-flow.models.toml"
+        text = repo_file.read_text(encoding="utf-8")
+        self.project(text)
+        profiles, roles = models.load(self.repo)
+        loop = profiles["openai-api"]
+        self.assertEqual(loop["driver"], "openai-loop")
+        self.assertEqual(loop["base_url"], "https://api.openai.com/v1")
+        self.assertEqual(loop["api_key_env"], "OPENAI_API_KEY")
+        self.assertEqual(loop["billing"], "api")
+        self.assertIsNotNone(loop["max_cost_usd"])
+        self.assertEqual(loop["max_tokens_param"], "max_completion_tokens")
+        for key in (
+            "price_input_per_mtok",
+            "price_cached_input_per_mtok",
+            "price_output_per_mtok",
+        ):
+            self.assertGreater(loop[key], 0, key)
+        cli = profiles["codex-api"]
+        self.assertEqual(cli["driver"], "cli")
+        self.assertEqual(cli["billing"], "api")
+        self.assertEqual(cli["api_key_env"], "CODEX_API_KEY")
+        self.assertIn("CODEX_API_KEY", cli["pass_env"])
+        self.assertEqual(cli["usage_format"], "codex-jsonl")
+        self.assertTrue(cli["read_only_command"])
+        for key in (
+            "price_input_per_mtok",
+            "price_cached_input_per_mtok",
+            "price_output_per_mtok",
+        ):
+            self.assertGreater(cli[key], 0, key)
+        # the examples are not used by any role, rule target or fallback chain
+        examples = {"openai-api", "codex-api"}
+        raw = tomllib.loads(text)
+        targets = []
+
+        def collect(value):
+            if isinstance(value, str):
+                targets.append(value)
+            elif isinstance(value, dict):
+                for item in value.values():
+                    collect(item)
+            elif isinstance(value, list):
+                for item in value:
+                    collect(item)
+
+        collect(raw.get("roles", {}))
+        for name, table in raw["profiles"].items():
+            if name not in examples:
+                collect(table.get("fallback", []))
+        self.assertFalse(examples & set(targets))
+        self.assertEqual(profiles["openai-api"]["fallback"], [])
+        self.assertEqual(profiles["codex-api"]["fallback"], [])
+        for value in roles.values():
+            self.assertNotIn(value, examples)
+        self.assertEqual(
+            roles,
+            {
+                "planner": "claude:opus",
+                "implementer": "claude:sonnet",
+                "backlog": "codex-backlog",
+                "checker": "script",
+                "reviewer": "claude:opus",
+            },
+        )
+
     def test_api_profile_rejects_cli_only_keys(self):
         for key, value in {
             "command": '["codex"]',

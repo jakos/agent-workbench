@@ -1172,6 +1172,66 @@ class ImplementTest(RoundFixture):
             set(metrics["settings"]), {"temperature", "max_output_tokens", "extra_body"}
         )
 
+    def test_openai_endpoint_profile_key_body_and_cost(self):
+        # an openai-loop profile shaped like the OpenAI endpoint: OPENAI_API_KEY as the
+        # Bearer key, max_completion_tokens in the body, reasoning tokens (already inside
+        # completion_tokens) billed once as output, and no key in any artifact
+        key = "sk-fake-openai-key-0001"
+        server = self.server(
+            [
+                reply(
+                    tool_call("write_file", {"path": "o.txt", "content": "o\n"}),
+                    usage={
+                        "prompt_tokens": 1000,
+                        "completion_tokens": 500,
+                        "prompt_tokens_details": {"cached_tokens": 400},
+                        "completion_tokens_details": {"reasoning_tokens": 300},
+                    },
+                ),
+                reply(
+                    content="done",
+                    usage={
+                        "prompt_tokens": 200,
+                        "completion_tokens": 100,
+                        "completion_tokens_details": {"reasoning_tokens": 40},
+                    },
+                ),
+            ]
+        )
+        self.configure(
+            self.profile(
+                "fake",
+                server,
+                api_key_env="OPENAI_API_KEY",
+                max_tokens_param="max_completion_tokens",
+                max_output_tokens=2048,
+                max_cost_usd=2.0,
+                price_input_per_mtok=2.0,
+                price_cached_input_per_mtok=0.1,
+                price_output_per_mtok=10.0,
+            )
+        )
+        done = self.run_round(env={"OPENAI_API_KEY": key})
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(len(server.requests), 2)
+        for request in server.requests:
+            self.assertEqual(request["auth"], f"Bearer {key}")
+            self.assertIsNone(request["api_key"])
+            self.assertEqual(request["body"]["max_completion_tokens"], 2048)
+            self.assertNotIn("max_tokens", request["body"])
+        metrics = self.metrics()
+        self.assertEqual(
+            metrics["tokens"], {"input": 1200, "cached": 400, "output": 600}
+        )
+        # (600*2 + 400*0.1 + 500*10) + (200*2 + 100*10) = 6240 + 1400 per 1e6
+        self.assertAlmostEqual(metrics["cost_usd"], 0.00764, places=9)
+        self.assertEqual(metrics["status"], "ok")
+        blob = done.stdout + done.stderr
+        for path in self.task.rglob("*"):
+            if path.is_file() and "worktree" not in path.relative_to(self.task).parts:
+                blob += path.read_text(encoding="utf-8", errors="replace")
+        self.assertNotIn(key, blob)
+
     def test_request_includes_temperature_and_extra_body(self):
         server = self.server([reply(content="done")])
         self.configure(
@@ -2276,6 +2336,34 @@ class CliDriverTest(RoundFixture):
         self.assertTrue(metrics["cli"]["usage_available"])
         self.assertEqual(metrics["cli"]["runs"][0]["billing"], "api")
         self.assertIsNone(metrics["cli"]["runs"][0]["cost_usd"])
+
+    def test_cli_api_billing_without_key_in_pass_env_refused_before_cli(self):
+        # without the key in pass_env the CLI would never see it and would bill the
+        # saved login while task-flow accounts API cost: refused before the CLI starts
+        marker = self.repo / "cli-ran.txt"
+        fake = self.fake_cli(
+            "fake_unforwarded.py",
+            "import pathlib\n"
+            f"pathlib.Path({str(marker)!r}).write_text('ran', encoding='utf-8')\n",
+        )
+        self.configure(
+            self.cli_profile(
+                "codex",
+                fake,
+                billing="api",
+                api_key_env="CODEX_API_KEY",
+                usage_format="codex-jsonl",
+            )
+        )
+        done = self.run_round(
+            profile="codex", env={"CODEX_API_KEY": "sk-codex-secret-123456"}
+        )
+        self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+        self.assertIn("pass_env", done.stdout + done.stderr)
+        self.assertIn("CODEX_API_KEY", done.stdout + done.stderr)
+        self.assertNotIn("sk-codex-secret-123456", done.stdout + done.stderr)
+        self.assertFalse(marker.exists())
+        self.assertEqual((self.task / "status.md").read_text(encoding="utf-8"), STATUS)
 
     def test_cli_failure_event_fails_despite_exit_zero(self):
         events = [
