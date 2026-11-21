@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.18.0 - 2026-11-21
+
+### Features
+
+- feat(task-flow): set reasoning effort per Claude subagent role (92ffc9d)
+
+### Fixes
+
+- fix(task-flow): isolate the CLI scratch-cleanup test from parallel checks (536bc4d)
+
 ## 0.17.0 - 2026-11-20
 
 ### Breaking changes
