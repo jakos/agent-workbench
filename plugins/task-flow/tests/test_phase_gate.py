@@ -6,6 +6,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -779,6 +780,96 @@ class WitnessGateTest(GateFixture):
 
 
 class PhaseGateTest(GateFixture):
+    @unittest.skipUnless(shutil.which("ssh-keygen"), "OpenSSH is unavailable")
+    def test_signed_operator_approval_and_grant(self) -> None:
+        key = self.root / "approval-key"
+        signers = self.root / "allowed_signers"
+        subprocess.run(["git", "init", "-q", str(self.project)], check=True)
+        subprocess.run(
+            ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)],
+            check=True,
+        )
+        signers.write_text(
+            "task-flow-operator " + key.with_suffix(".pub").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.project),
+                "config",
+                "--local",
+                "task-flow.allowedSignersFile",
+                str(signers),
+            ],
+            check=True,
+        )
+
+        def sign(
+            name: str, ceiling: int = 0, expired: bool = False
+        ) -> tuple[Path, Path]:
+            payload = self.task / f"{name}.json"
+            self.assertEqual(
+                gate.main(
+                    [
+                        "approval-request",
+                        "--task-dir",
+                        str(self.task),
+                        "--output",
+                        str(payload),
+                        "--ceiling",
+                        str(ceiling),
+                    ]
+                ),
+                0,
+            )
+            if expired:
+                request = json.loads(payload.read_bytes())
+                request["issued"] = (
+                    datetime.now(UTC) - timedelta(minutes=6)
+                ).isoformat()
+                payload.write_text(json.dumps(request), encoding="utf-8")
+            subprocess.run(
+                [
+                    "ssh-keygen",
+                    "-q",
+                    "-Y",
+                    "sign",
+                    "-f",
+                    str(key),
+                    "-n",
+                    "task-flow-approval",
+                    str(payload),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            return payload, payload.with_suffix(".json.sig")
+
+        expired = sign("expired", expired=True)
+        with self.assertRaisesRegex(gate.Refusal, "expired"):
+            self.call("approve", source="user", signed_proof=expired)
+        proof = sign("approve")
+        with self.assertRaisesRegex(gate.Refusal, "signature verification failed"):
+            self.call("approve", source="user", signed_proof=(proof[0], expired[1]))
+        self.write("plan.md", PLAN.replace("Exercise gates.", "Changed plan."))
+        with self.assertRaisesRegex(gate.Refusal, "does not match"):
+            self.call("approve", source="user", signed_proof=proof)
+        self.write("plan.md", PLAN)
+        event = self.call("approve", source="user", signed_proof=proof)
+        self.assertEqual(event["authorization"]["channel"], "ssh-signature")
+        with self.assertRaisesRegex(gate.Refusal, "already consumed"):
+            self.call("approve", source="user", signed_proof=proof)
+        proof = sign("grant", 5)
+        with self.assertRaisesRegex(gate.Refusal, "does not match"):
+            self.call("grant", source="user", ceiling=6, signed_proof=proof)
+        self.assertEqual(
+            self.call("grant", source="user", ceiling=5, signed_proof=proof)["ceiling"],
+            5,
+        )
+        self.call("transition", target="baseline")
+
     def test_legacy_preserves_old_behaviour(self) -> None:
         self.config.unlink()
         self.write("status.md", "not a valid new status")

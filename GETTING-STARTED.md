@@ -16,7 +16,7 @@ uv tool install ruff
 Then install the plugin at user scope, so it loads in every project:
 
 ```
-/plugin marketplace add jakos/agent-workbench
+/plugin marketplace add jakos/agent-workbench#task-flow-0.18.0
 /plugin install dev-baseline@agent-workbench
 ```
 
