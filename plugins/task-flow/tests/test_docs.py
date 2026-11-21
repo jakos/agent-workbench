@@ -5,6 +5,7 @@
 """Check plugin documentation, the usage guide and status-labelled roadmap."""
 
 import re
+import sys
 import tempfile
 import tomllib
 import unittest
@@ -12,6 +13,55 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT / "plugins/task-flow/scripts"))
+
+DEAD_ENDS = ROOT / "docs/task-flow-dead-ends.md"
+DEAD_END_SECTIONS = ["Method", "Dead ends", "Self-hosting", "Follow-up epic"]
+DEAD_END_FIELDS = (
+    "Incident",
+    "Enforced at",
+    "How it blocks",
+    "Automatic run",
+    "Remedy",
+    "Follow-up",
+)
+SELF_HOSTING_PHASES = (
+    "hooks",
+    "plan",
+    "approve",
+    "baseline",
+    "implement",
+    "check",
+    "review",
+    "finish",
+    "release",
+)
+GOVERNING_COPIES = ("installed plugin", "root checkout", "task worktree")
+REFERENCE = re.compile(r"`([^`\s]+?):(\d+)`")
+
+
+def markdown_sections(text: str, level: str) -> list[tuple[str, list[str]]]:
+    """Split lines into (heading, body) pairs at headings of exactly `level`."""
+    sections: list[tuple[str, list[str]]] = []
+    for line in text.splitlines():
+        if line.startswith(level + " "):
+            sections.append((line[len(level) + 1 :].strip(), []))
+        elif sections:
+            sections[-1][1].append(line)
+    return sections
+
+
+def table_rows(lines: list[str]) -> list[list[str]]:
+    """Return the cells of the first Markdown table, without its separator row."""
+    rows = []
+    for line in lines:
+        if line.startswith("|"):
+            cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+            if not all(set(cell) <= set("-: ") for cell in cells):
+                rows.append(cells)
+        elif rows:
+            break
+    return rows
 
 
 def prose(text: str) -> str:
@@ -303,6 +353,170 @@ class DocumentationTest(unittest.TestCase):
                         f"{path}: broken fragment {target}",
                     )
 
+    def assert_references(self, text: str, root: Path, where: str) -> int:
+        """Every backticked path:line names an existing repository file and line."""
+        found = 0
+        for path, line in REFERENCE.findall(text):
+            found += 1
+            message = f"{where}: bad reference {path}:{line}"
+            self.assertNotIn("\\", path, message)
+            self.assertFalse(path.startswith(("/", "../", "./")), message)
+            self.assertIsNone(re.match(r"^[A-Za-z]:", path), message)
+            self.assertFalse(path == ".work" or path.startswith(".work/"), message)
+            target = root / path
+            self.assertTrue(target.is_file(), message)
+            count = len(target.read_text(encoding="utf-8").splitlines())
+            self.assertTrue(1 <= int(line) <= count, message)
+        return found
+
+    def assert_dead_ends_audit(self, path: Path, root: Path = ROOT) -> None:
+        import epics
+        import role_contracts
+
+        text = path.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        self.assertEqual(lines[0], "# task-flow dead ends and blocking paths")
+        preamble = text.split("\n## ", 1)[0]
+        self.assertRegex(
+            preamble, r"(?m)^Audited commit: [0-9a-f]{7,40}$", "missing audited commit"
+        )
+        sections = markdown_sections(text, "##")
+        self.assertEqual([name for name, _ in sections], DEAD_END_SECTIONS)
+        body = dict(sections)
+        for marker in role_contracts.TRUNCATION_MARKERS:
+            self.assertIsNone(marker.search(text), "truncation marker in document")
+        self.assert_references(text, root, path.name)
+
+        entries = markdown_sections("\n".join(body["Dead ends"]), "###")
+        self.assertTrue(entries, "no dead-end entries")
+        incidents: set[int] = set()
+        none_entries = 0
+        follow_ups: dict[str, str] = {}
+        for number, (heading, entry) in enumerate(entries, 1):
+            name = f"DE{number:02d}"
+            self.assertRegex(heading, rf"^{name}: \S", f"entry {number} numbering")
+            fields = [line for line in entry if line.strip()]
+            self.assertEqual(
+                [re.sub(r":.*", "", line) for line in fields],
+                [f"- {field}" for field in DEAD_END_FIELDS],
+                f"{name}: fields",
+            )
+            values = {}
+            for field_name, line in zip(DEAD_END_FIELDS, fields):
+                value = line.split(":", 1)[1].strip()
+                self.assertTrue(value, f"{name}: empty {field_name}")
+                values[field_name] = value
+            incident = values["Incident"]
+            if incident == "none":
+                none_entries += 1
+            else:
+                numbers = [part.strip() for part in incident.split(",")]
+                for part in numbers:
+                    self.assertRegex(part, r"^\d+$", f"{name}: incident {part}")
+                    self.assertIn(int(part), range(1, 14), f"{name}: incident {part}")
+                    incidents.add(int(part))
+            self.assertGreater(
+                self.assert_references(values["Enforced at"], root, name),
+                0,
+                f"{name}: Enforced at needs a path:line reference",
+            )
+            self.assertRegex(
+                values["Automatic run"], r"^(?:yes|no|partly) — \S", f"{name}: run"
+            )
+            follow_ups[name] = values["Follow-up"]
+        self.assertEqual(incidents, set(range(1, 14)), "incidents must cover 1..13")
+        self.assertGreaterEqual(none_entries, 3, "too few Incident: none entries")
+
+        hosting = body["Self-hosting"]
+        rows = table_rows(hosting)
+        self.assertTrue(rows, "missing self-hosting table")
+        self.assertEqual(rows[0], ["Phase", "Governing copy", "Evidence"])
+        for phase in SELF_HOSTING_PHASES:
+            matching = [row for row in rows[1:] if row[0].split()[:1] == [phase]]
+            self.assertTrue(matching, f"self-hosting: missing phase {phase}")
+            for row in matching:
+                self.assertEqual(len(row), 3, f"self-hosting: {phase} row")
+                self.assertTrue(
+                    any(copy in row[1] for copy in GOVERNING_COPIES),
+                    f"self-hosting: {phase} names no governing copy",
+                )
+                self.assertGreater(
+                    self.assert_references(row[2], root, phase),
+                    0,
+                    f"self-hosting: {phase} has no evidence",
+                )
+        after = "\n".join(hosting).rsplit("\n|", 1)[-1]
+        self.assertIn("bootstrap", after.lower(), "missing bootstrap analysis")
+
+        epic = body["Follow-up epic"]
+        table = [line for line in epic if line.startswith("|")]
+        start = epic.index(table[0]) if table else 0
+        block = []
+        for line in epic[start:]:
+            if not line.startswith("|"):
+                break
+            block.append(line)
+        tasks = epics._parse_tasks(block, "dead-ends")
+        self.assertTrue(tasks, "empty follow-up epic")
+        ids = [task.task_id for task in tasks]
+        described = {
+            heading: [line for line in section if line.strip()]
+            for heading, section in markdown_sections("\n".join(epic), "###")
+        }
+        for task_id in ids:
+            self.assertTrue(described.get(task_id), f"no description for {task_id}")
+        named: set[str] = set()
+        for name, follow_up in follow_ups.items():
+            if follow_up.startswith("none"):
+                self.assertRegex(follow_up, r"^none — \S", f"{name}: none needs reason")
+                continue
+            self.assertIn(follow_up, ids, f"{name}: unknown follow-up {follow_up}")
+            named.add(follow_up)
+        self.assertEqual(named, set(ids), "every epic row needs a dead-end entry")
+
+    def test_dead_ends_audit_document(self) -> None:
+        self.assert_dead_ends_audit(DEAD_ENDS)
+
+    def write_variant(self, folder: str, text: str) -> Path:
+        path = Path(folder) / "task-flow-dead-ends.md"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_dead_ends_audit_rejects_missing_incident(self) -> None:
+        original = DEAD_ENDS.read_text(encoding="utf-8")
+        self.assertIn("- Incident: 13\n", original)
+        with tempfile.TemporaryDirectory() as folder:
+            path = self.write_variant(
+                folder, original.replace("- Incident: 13\n", "- Incident: none\n")
+            )
+            with self.assertRaisesRegex(AssertionError, "incidents must cover"):
+                self.assert_dead_ends_audit(path)
+
+    def test_dead_ends_audit_rejects_bad_reference(self) -> None:
+        original = DEAD_ENDS.read_text(encoding="utf-8")
+        reference = "`plugins/task-flow/scripts/epics.py:931`"
+        self.assertIn(reference, original)
+        for bad in (
+            "`plugins/task-flow/scripts/epics.py:999999`",
+            "`plugins/task-flow/scripts/no_such_file.py:1`",
+            "`.work/task-flow-dead-ends-audit/plan.md:1`",
+        ):
+            with self.subTest(reference=bad), tempfile.TemporaryDirectory() as folder:
+                path = self.write_variant(folder, original.replace(reference, bad))
+                with self.assertRaisesRegex(AssertionError, "bad reference"):
+                    self.assert_dead_ends_audit(path)
+
+    def test_dead_ends_audit_rejects_unknown_follow_up(self) -> None:
+        original = DEAD_ENDS.read_text(encoding="utf-8")
+        line = "- Follow-up: epic-chained-remove\n"
+        self.assertIn(line, original)
+        with tempfile.TemporaryDirectory() as folder:
+            path = self.write_variant(
+                folder, original.replace(line, "- Follow-up: no-such-task\n")
+            )
+            with self.assertRaisesRegex(AssertionError, "unknown follow-up"):
+                self.assert_dead_ends_audit(path)
+
     def test_readme_describes_plugins_and_status_labelled_roadmap(self) -> None:
         self.assert_readme(ROOT)
 
@@ -314,6 +528,7 @@ class DocumentationTest(unittest.TestCase):
             ROOT / "README.md",
             ROOT / "GETTING-STARTED.md",
             ROOT / "docs/how-to.md",
+            ROOT / "docs/task-flow-dead-ends.md",
         ]
         paths.extend((ROOT / "plugins").rglob("*.md"))
         paths.extend((ROOT / ".claude").rglob("*.md"))
