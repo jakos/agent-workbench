@@ -129,10 +129,10 @@ timeout_seconds = 1800
 
 [roles]
 # Claude subagents in the session (subscription) since 2026-11-20; the Codex profiles
-# above stay defined. To switch back: planner = "codex-plan", reviewer = "codex-review"
+# above stay defined. Implementer on claude:sonnet since 2026-11-21. To switch back: planner = "codex-plan", reviewer = "codex-review"
 # and the [roles.implementer] band table below instead of the implementer scalar.
 planner = "claude:opus"
-implementer = "claude:opus"
+implementer = "claude:sonnet"
 backlog = "codex-backlog"
 checker = "script"
 reviewer = "claude:opus"
@@ -168,7 +168,9 @@ workers = 4
 
 # Reasoning effort of the Claude subagent roles. Planner on medium: plans are scoped by
 # task.md and parallel high-effort planning exhausted the session limit (2026-11-21).
+# Implementer on sonnet high and reviewer on opus medium to spend less of the Claude limit
+# per task (wave 9 row 1 used about 85k implementer + 83k reviewer tokens on opus).
 [roles.effort]
 planner = "medium"
-implementer = "medium"
-reviewer = "high"
+implementer = "high"
+reviewer = "medium"
