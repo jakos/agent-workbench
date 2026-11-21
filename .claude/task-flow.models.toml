@@ -132,7 +132,7 @@ timeout_seconds = 1800
 # above stay defined. To switch back: planner = "codex-plan", reviewer = "codex-review"
 # and the [roles.implementer] band table below instead of the implementer scalar.
 planner = "claude:opus"
-implementer = "claude:sonnet"
+implementer = "claude:opus"
 backlog = "codex-backlog"
 checker = "script"
 reviewer = "claude:opus"
@@ -166,3 +166,9 @@ reviewer = "claude:opus"
 command_timeout_seconds = 2400
 workers = 4
 
+# Reasoning effort of the Claude subagent roles. Planner on medium: plans are scoped by
+# task.md and parallel high-effort planning exhausted the session limit (2026-11-21).
+[roles.effort]
+planner = "medium"
+implementer = "medium"
+reviewer = "high"
