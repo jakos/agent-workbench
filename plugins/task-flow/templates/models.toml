@@ -60,16 +60,45 @@ prompt_extras = []                     # files whose contents are appended to th
 # price_cached_input_per_mtok = 0.0
 # price_output_per_mtok = 0.0
 
-# The same CLI on an invocation-scoped API key instead of the saved login:
+# The same CLI on an invocation-scoped API key (per-token OpenAI billing) instead of the
+# saved login. Codex `exec` reads the key from CODEX_API_KEY. pass_env MUST contain
+# api_key_env: the CLI environment is an allowlist, and without the key the CLI would
+# silently use its saved login while task-flow accounts the work as API cost; models.py
+# refuses that profile. max_cost_usd is refused on driver "cli" (the CLI owns its loop and
+# reports usage only when it ends): the run is bounded by timeout_seconds, and its cost
+# (prices x reported usage; null when usage or prices are missing) is recorded per run in
+# impl-<n>.json / role-*.json. Prices are USD per 1M tokens (OpenAI pricing page, read
+# 2026-11-21); they drift, so check the page.
 # [profiles.codex-api]
 # driver = "cli"
-# model = "gpt-5.2-codex"
+# model = "gpt-6.1-sol"
 # billing = "api"
 # api_key_env = "CODEX_API_KEY"          # required with billing = "api" on driver "cli"
-# pass_env = ["CODEX_API_KEY"]           # the key reaches the CLI; no other secret does
-# command = ["codex", "exec", "--sandbox", "workspace-write", "--json", "--ephemeral", "-m", "gpt-5.2-codex", "-o", "{last_message_file}", "-"]
+# pass_env = ["CODEX_API_KEY"]           # must contain api_key_env; the key reaches the CLI, no other secret does
+# command = ["codex", "exec", "--sandbox", "workspace-write", "--json", "--ephemeral", "-m", "gpt-6.1-sol", "-"]
+# read_only_command = ["codex", "exec", "--sandbox", "read-only", "--json", "--ephemeral", "-m", "gpt-6.1-sol", "-o", "{last_message_file}", "-"]
 # usage_format = "codex-jsonl"
-# timeout_seconds = 900
+# timeout_seconds = 3600                 # the only bound on one run's spend
+# price_input_per_mtok = 2.00
+# price_cached_input_per_mtok = 0.10
+# price_output_per_mtok = 10.00
+
+# The OpenAI endpoint through the openai-loop driver, billed per token. The key is read
+# from the variable named by api_key_env (export OPENAI_API_KEY before the run; never write
+# the key here). max_completion_tokens is the body key OpenAI's newer models expect.
+# max_cost_usd is enforced per turn and is cumulative over the run.
+# [profiles.openai-api]
+# driver = "openai-loop"
+# base_url = "https://api.openai.com/v1"
+# model = "gpt-6.1-sol"
+# api_key_env = "OPENAI_API_KEY"
+# billing = "api"
+# max_turns = 150
+# max_cost_usd = 2.00
+# price_input_per_mtok = 2.00
+# price_cached_input_per_mtok = 0.10
+# price_output_per_mtok = 10.00
+# max_tokens_param = "max_completion_tokens"
 
 # A Claude profile on the native Messages API (prompt caching, cache-aware cost).
 # Prices are USD per 1M tokens as of 2026-11-01; check the provider's pricing page.

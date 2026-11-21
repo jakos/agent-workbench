@@ -617,6 +617,52 @@ class CliRunTest(Base):
         record = role_runtime.load_role_metrics(repo2.task)[0]
         self.assertEqual(record["result"], "failed")
 
+    def test_cli_api_billing_producer_forwards_key_and_records_cost(self):
+        key = "sk-codex-fake-key-0001"
+        spec = self.tmp / "spec-api.json"
+        spec.write_text(json.dumps([VALID_PLAN]), encoding="utf-8")
+        seen = self.tmp / "key-seen.txt"
+        runner = self.tmp / "env-runner.py"
+        runner.write_text(
+            "import os\n"
+            f"open({str(seen)!r}, 'w', encoding='utf-8').write("
+            "'present' if os.environ.get('CODEX_API_KEY') else 'absent')\n"
+            + FAKE_CLI_RUNNER,
+            encoding="utf-8",
+        )
+        toml = (
+            CLI_TOML.replace('"{python}"', json.dumps(sys.executable))
+            .replace('"{runner}"', json.dumps(str(runner)))
+            .replace('"{spec}"', json.dumps(str(spec)))
+            .replace(
+                'billing = "subscription"',
+                'billing = "api"\napi_key_env = "CODEX_API_KEY"\n'
+                'pass_env = ["CODEX_API_KEY"]\n'
+                "price_input_per_mtok = 1.0\n"
+                "price_cached_input_per_mtok = 0.5\n"
+                "price_output_per_mtok = 2.0",
+            )
+        )
+        repo = Base.repo(self, toml)
+        with mock.patch.dict(os.environ, {"CODEX_API_KEY": key}):
+            code = self.run_cli(repo)
+        self.assertEqual(code, 0)
+        self.assertEqual(seen.read_text(encoding="utf-8"), "present")
+        self.assertEqual(
+            (repo.task / "plan.md").read_text(encoding="utf-8"), VALID_PLAN
+        )
+        record = role_runtime.load_role_metrics(repo.task)[0]
+        self.assertEqual(record["tokens"], {"input": 50, "cached": 5, "output": 10})
+        # (45 uncached * 1.0 + 5 cached * 0.5 + 10 output * 2.0) per 1e6 tokens
+        self.assertAlmostEqual(record["cost_usd"], 67.5e-6, places=12)
+        files = list(repo.task.glob("role-planner-*.json"))
+        self.assertEqual(len(files), 1)
+        for path in repo.task.rglob("*"):
+            if path.is_file():
+                self.assertNotIn(
+                    key, path.read_text(encoding="utf-8", errors="replace"), str(path)
+                )
+
 
 class ToolsTest(unittest.TestCase):
     """The planner API tools: read-only, contained, argv-allowlisted."""

@@ -127,6 +127,44 @@ read_only_command = ["codex", "exec", "-c", "model_reasoning_effort=low", "--san
 usage_format = "codex-jsonl"
 timeout_seconds = 1800
 
+# Examples for per-token OpenAI billing. No role, rule or fallback uses them: to try one,
+# point a [roles] entry at it and export the key variable first. api_key_env is the NAME of
+# an environment variable, never a key. Prices are USD per 1M tokens (OpenAI pricing page,
+# read 2026-11-21) and will drift.
+#
+# openai-api: the openai-loop driver against the OpenAI endpoint; max_cost_usd is enforced
+# per turn and cumulative over one run.
+[profiles.openai-api]
+driver = "openai-loop"
+base_url = "https://api.openai.com/v1"
+model = "gpt-6.1-sol"
+api_key_env = "OPENAI_API_KEY"
+billing = "api"
+max_turns = 150
+max_cost_usd = 2.00
+price_input_per_mtok = 2.00
+price_cached_input_per_mtok = 0.10
+price_output_per_mtok = 10.00
+max_tokens_param = "max_completion_tokens"
+
+# codex-api: the Codex CLI on an API key (CODEX_API_KEY) instead of the ChatGPT login.
+# pass_env must contain api_key_env or the CLI falls back to its saved login. max_cost_usd
+# is refused on driver "cli": the run is bounded by timeout_seconds and its cost is
+# recorded per run (impl-<n>.json, role-*.json).
+[profiles.codex-api]
+driver = "cli"
+model = "gpt-6.1-sol"
+billing = "api"
+api_key_env = "CODEX_API_KEY"
+pass_env = ["CODEX_API_KEY"]
+command = ["codex", "exec", "-c", "model_reasoning_effort=medium", "--sandbox", "workspace-write", "--json", "--ephemeral", "-m", "gpt-6.1-sol", "-"]
+read_only_command = ["codex", "exec", "-c", "model_reasoning_effort=medium", "--sandbox", "read-only", "--json", "--ephemeral", "-m", "gpt-6.1-sol", "-o", "{last_message_file}", "-"]
+usage_format = "codex-jsonl"
+timeout_seconds = 3600
+price_input_per_mtok = 2.00
+price_cached_input_per_mtok = 0.10
+price_output_per_mtok = 10.00
+
 [roles]
 # Claude subagents in the session (subscription) since 2026-11-20; the Codex profiles
 # above stay defined. Implementer on claude:sonnet since 2026-11-21. To switch back: planner = "codex-plan", reviewer = "codex-review"

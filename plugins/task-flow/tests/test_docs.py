@@ -182,6 +182,26 @@ class DocumentationTest(unittest.TestCase):
         project = (ROOT / ".claude/task-flow.models.toml").read_text(encoding="utf-8")
         self.assertEqual(tomllib.loads(project)["gates"]["workers"], 4)
 
+    def test_openai_api_billing_docs_and_template(self) -> None:
+        plugin = ROOT / "plugins/task-flow"
+        readme = (plugin / "README.md").read_text(encoding="utf-8")
+        self.assertIn("\n## OpenAI API billing\n", readme)
+        for phrase in (
+            'billing = "api"',
+            "api_key_env",
+            "pass_env",
+            "CODEX_API_KEY",
+            "OPENAI_API_KEY",
+            "max_cost_usd",
+            "timeout_seconds",
+            "never zero",
+        ):
+            self.assertIn(phrase, readme)
+        template = (plugin / "templates/models.toml").read_text(encoding="utf-8")
+        tomllib.loads(template)
+        self.assertIn("https://api.openai.com/v1", template)
+        self.assertIn("CODEX_API_KEY", template)
+
     def test_claude_subagent_effort_contract(self) -> None:
         plugin = ROOT / "plugins/task-flow"
         levels = ("low", "medium", "high", "xhigh", "max")
