@@ -120,6 +120,20 @@ checker = "claude:haiku"      # checker agent's frontmatter default: haiku
 reviewer = "claude:opus"      # reviewer agent's frontmatter default: opus
 backlog = "claude:opus"       # backlog agent's frontmatter default: opus
 
+# Optional reasoning effort per Claude subagent role, passed as the subagent call's
+# effort argument. Levels: "low", "medium", "high", "xhigh", "max".
+# - Claude roles only: effort on a role whose value is a profile name or "script" is an
+#   error. Set it in the same file that makes the role a Claude role.
+# - Unset means the subagent's own default (today's behaviour); copying this file
+#   changes nothing while the table stays commented out.
+# - The table merges per role across the user and project files; the project file wins.
+# [roles.effort]
+# planner = "high"
+# implementer = "medium"
+# checker = "low"
+# reviewer = "xhigh"
+# backlog = "max"
+
 [gates]
 # Positive integer; defaults to 1 (serial). The project overrides the user value.
 # gates.py, verify.py and release.py verify bound independent commands with this key.

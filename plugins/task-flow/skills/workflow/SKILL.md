@@ -23,7 +23,8 @@ chat history; everything another role needs is written to `.work/<task-id>/`.
   review-<n>.md    reviewer verdict for round n
   impl-<n>.json    implementer metrics for round n — written by scripts/implement.py
                    for an external profile, and by the orchestrator for a Claude round
-                   when records are enabled (see Task records below); an external round
+                   when records are enabled (see Task records below; a Claude round
+                   also carries an optional `effort` key when one was passed); an external round
                    may carry a `cli` section (driver "cli"), and `cost_usd`/`tokens` are
                    null when the cost or usage is unknown (e.g. a CLI subscription) —
                    unknown, never zero

@@ -210,14 +210,26 @@ uv run --quiet --script "${CLAUDE_PLUGIN_ROOT}/scripts/models.py" roles --projec
 
 It prints one JSON object with the five roles (`planner`, `implementer`, `checker`,
 `reviewer`, `backlog`); each maps to `{"value": <configured value, or "claude" when unset>,
-"kind": "claude" | "profile" | "script", "model": <opus|sonnet|haiku, or null>}`. Exit 2:
+"kind": "claude" | "profile" | "script", "model": <opus|sonnet|haiku, or null>,
+"effort": <low|medium|high|xhigh|max, or null>}`. Exit 2:
 show its stderr and end the command without changing `status.md` — a precondition, not a
 stop. Pass a role's subagent call the `model` argument when that role's `model` is not
 null, and no `model` when it is null (the agent's frontmatter model then applies). With no
-`models.toml`, every role is `{"kind": "claude", "model": null, "value": "claude"}` and
+`models.toml`, every role is `{"effort": null, "kind": "claude", "model": null, "value": "claude"}` and
 nothing changes. A `checker` entry of kind `script` means `scripts/gates.py` runs in
 Phase baseline and Phase check (see those phases): never the checker subagent, and never
 a silent fallback to it either way — kind `claude` always runs `task-flow:checker`.
+
+The `effort` of a Claude role is its reasoning effort, set by `[roles.effort]` in
+models.toml (levels `low`, `medium`, `high`, `xhigh`, `max`). Pass the `effort` argument
+on every Claude subagent launch of that role when its `effort` is not null, and no
+`effort` when it is null (the subagent's own default then applies, exactly as today).
+This covers every task-run phase, autopilot, `--tasks` runs, epics and the backlog
+role. `models.py select <role>` prints the same `effort` key; use it the same way for
+the planner, reviewer and backlog. The History line that names a Claude role appends it
+when set (`claude:opus, effort high`, `claude, effort low`) and is unchanged when it is
+null. A profile or `script` role never has an effort, and an invocation-scoped
+`--planner <profile>` override reports `effort: null`.
 
 For one invocation-scoped override, `task-plan`, `task-run`, `task-autopilot` and
 `task-epic run` accept `--planner <profile>`: resolve it with
@@ -281,7 +293,7 @@ missing, duplicate or stale test entries and self-reference before execution.
    `billing`. With no external planner configured (kind `claude`) the orchestrator
    runs the Claude subagent; `scripts/role_run.py` refuses a Claude role itself.
 1. Kind `claude` (value `claude` or `claude:*`, also the result with no config): run
-   subagent `task-flow:planner` with the paths (its model as in "Choosing each role's
+   subagent `task-flow:planner` with the paths (its model and effort as in "Choosing each role's
    model").
    Kind `profile`: from the repository root, in the background (the planning run can
    outlast the Bash tool's foreground limit), run
@@ -302,7 +314,8 @@ missing, duplicate or stale test entries and self-reference before execution.
    phase `new`, stop. After the user answers, append the answers to `task.md` and re-plan.
 3. Otherwise set phase `planned` and show a short summary: goal, profiles, number of
    steps, the acceptance criteria verbatim, the verification commands. The History
-   line names the planner: `claude`, `claude:<model>`, or `planner <profile> (external,
+   line names the planner: `claude`, `claude:<model>` (each followed by `, effort <level>`
+   when an effort was passed), or `planner <profile> (external,
    <method>/<model>): published plan.md` — recorded only when planning succeeded, so a
    failed or refused external run leaves `status.md` untouched. After a successful
    external planner run, recompute the task's External USD from all invocation records
@@ -345,7 +358,7 @@ missing, duplicate or stale test entries and self-reference before execution.
    and wait. Exit 0: continue exactly as after the checker subagent — show the table from
    `checks-0.md`; the History line names `checker: script`. Exit 2: show stderr and end
    the command without changing `status.md` (a precondition, not a stop; the same command
-   resumes). Otherwise run subagent `task-flow:checker` with round 0 (its model as in
+   resumes). Otherwise run subagent `task-flow:checker` with round 0 (its model and effort as in
    "Choosing each role's model"). It runs the plan's verification commands on the
    untouched base and writes `checks-0.md`.
 4. Failures in `checks-0.md` do not stop the run. They are recorded; continue to round 1.
@@ -377,7 +390,8 @@ steps 1-3 again; step 2 reuses an existing worktree or branch and never re-creat
    - (c) Kind `claude` (value `claude` or `claude:*`, also the result with no config):
      run subagent `task-flow:implementer` with the paths, and for n > 1 the path of
      `review-<n-1>.md`, passing the entry's `model` as the subagent call's `model`
-     argument when it is not null, exactly as today otherwise.
+     argument when it is not null and its `effort` as the `effort` argument when it is
+     not null, exactly as today otherwise.
    - (d) Kind `profile`: the entry's `value` is the profile name. From the repository
      root, in the background
      (the round can outlast the Bash tool's foreground limit), run
@@ -390,7 +404,8 @@ steps 1-3 again; step 2 reuses an existing worktree or branch and never re-creat
      round n, and end the command; the same command (`task-run <id>` /
      `task-implement <id>`) runs round n again. This is not one of the stops, does not count
      as a round, and is not a judgment that the run cannot pass.
-   - (e) The History line names the implementer: `claude`, or `claude:<model>`, or
+   - (e) The History line names the implementer: `claude`, or `claude:<model>` (each
+     followed by `, effort <level>` when an effort was passed), or
      `<profile> (external): <result line>`.
    - (f) **Execution metadata (records only).** When the selected worktree (or the
      repository root when `worktree: none`) has `.claude/task-flow.records.toml` with
@@ -398,7 +413,8 @@ steps 1-3 again; step 2 reuses an existing worktree or branch and never re-creat
      `<task-dir>/impl-<n>.json`:
      `{"kind": "claude", "profile": "claude", "model": "<model>"}` with the `model`
      argument passed to the subagent call, or the implementer agent file's frontmatter
-     `model` when none was passed (null). It is resolved and recorded at implement
+     `model` when none was passed (null); when an `effort` argument was passed it also
+     carries `"effort": "<level>"`, and the key is omitted otherwise. It is resolved and recorded at implement
      time, never inferred from `models.toml` at finish; an unavailable model stays
      `unknown`. External rounds already get their `impl-<n>.json` from `implement.py`.
      Without the config, nothing is written.
@@ -412,7 +428,7 @@ Phase `checking`. When the `checker` entry of `models.py roles` has kind `script
 continues (show the table from `checks-<n>.md`; the History line names `checker:
 script`), exit 2 shows stderr and ends the command without changing `status.md` (a
 precondition, not a stop; the same command resumes). Otherwise run subagent
-`task-flow:checker` (its model as in "Choosing each role's
+`task-flow:checker` (its model and effort as in "Choosing each role's
 model"). It writes `checks-<n>.md`. When the
 current round is 0 (approved, no round run yet), run **Phase: baseline** instead.
 
@@ -432,7 +448,8 @@ current round is 0 (approved, no round run yet), run **Phase: baseline** instead
    is a successful no-op and keeps prior review requirements.
    Kind `claude`: set
    phase `reviewing` and run `task-flow:reviewer` with the configured Claude model
-   override, or its frontmatter default. Kind `profile`: run
+   override and the configured `effort` argument when not null, or its frontmatter
+   default. Kind `profile`: run
    `uv run --quiet --script "${CLAUDE_PLUGIN_ROOT}/scripts/role_run.py" --role reviewer --task-dir <abs .work/<id>> --project <repo-root> --worktree <abs worktree | none> --round <n>`.
    The external route computes the same trusted risk assessment before contact and
    requires attention at or above the floor in host validation before publication.
@@ -576,8 +593,8 @@ completed, and that the `## Tasks` table matches the epic's rows and dependencie
    output to `requirements.md` under
    `## Repository`.
 3. **Decompose.** Resolve `models.py select backlog --project <repo-root>`.
-   Kind `claude`: run `task-flow:backlog` (configured Claude model override or
-   frontmatter default), telling it `thin: yes|no` from inspect. Kind `profile`: run
+   Kind `claude`: run `task-flow:backlog` (configured Claude model override and
+   configured `effort` argument when not null, or frontmatter default), telling it `thin: yes|no` from inspect. Kind `profile`: run
    `uv run --quiet --script "${CLAUDE_PLUGIN_ROOT}/scripts/role_run.py" --role backlog --run-dir <abs .work/_autopilot/<run-id>> --project <repo-root> --worktree none`.
    For `--from-repo`, use that command with `--from-repo` in Gather instead of calling
    the Claude backlog agent: it gathers and decomposes in one invocation. Skip this
@@ -599,7 +616,7 @@ completed, and that the `## Tasks` table matches the epic's rows and dependencie
    Constraints plus a Context line naming the run and its dependencies; `status.md` with
    the run's base) and add its row to `run.md`; with a bootstrap task set `bootstrap:` to
    its final id. Then Phase: plan steps 0–3 for each task **without the approval gate**, in
-   table order; each planner runs with its model as in "Choosing each role's model" (via
+   table order; each planner runs with its model and effort as in "Choosing each role's model" (via
    Phase: plan steps 0–1), passing the run's `--planner <profile>` through as the
    invocation override when the command was given one — the run's History records the
    invocation once (`planned — planner override <profile> (<method>/<model>)`, only
