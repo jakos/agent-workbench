@@ -53,6 +53,10 @@ path = "plugins/task-flow/.claude-plugin/plugin.json"
 format = "json"
 selector = "version"
 [[targets.task-flow.version_files]]
+path = "plugins/task-flow/.codex-plugin/plugin.json"
+format = "json"
+selector = "version"
+[[targets.task-flow.version_files]]
 path = ".claude-plugin/marketplace.json"
 format = "json"
 selector = "plugins[name=task-flow].version"

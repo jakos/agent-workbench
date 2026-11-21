@@ -2,7 +2,7 @@
 # requires-python = ">=3.14"
 # dependencies = []
 # ///
-"""Opt-in workflow transitions and audit evidence; no model or shell execution."""
+"""Opt-in workflow transitions and audit evidence."""
 
 import argparse
 import hashlib
@@ -21,6 +21,7 @@ from pathlib import Path
 import approval_witness
 import policy
 import role_contracts
+import signed_approval
 from rules import witness_command, witness_write
 
 PHASES = {
@@ -386,7 +387,8 @@ def parse_log(raw: bytes, task_id: str) -> list[dict]:
             if (
                 not isinstance(evidence, dict)
                 or set(evidence) != {"channel", "reference"}
-                or evidence["channel"] not in ("user-prompt", "terminal")
+                or evidence["channel"]
+                not in ("user-prompt", "terminal", "ssh-signature")
                 or not isinstance(evidence["reference"], str)
                 or not re.fullmatch(r"[a-f0-9]{64}", evidence["reference"])
                 or event["source"] != "user"
@@ -734,13 +736,16 @@ def authorization_request(
     *,
     session: str,
     home: Path | None = None,
-) -> None:
-    """Issue only through the real user-prompt hook."""
+    signed: bool = False,
+) -> dict | None:
+    """Issue a prompt witness or prepare an unsigned request for the operator."""
     task = task.resolve()
     if task.parent.name != ".work" or not task.is_dir():
         raise Refusal("task must be an existing ordinary .work directory")
     loaded = policy.effective(policy.load(task.parent.parent, home or Path.home()))
     if loaded["mode"] == "legacy":
+        if signed:
+            raise Refusal("signed approval requires configured policy")
         return
     with locked(task):
         text, state = status(task)
@@ -774,6 +779,10 @@ def authorization_request(
                 raise Refusal("approval requires planned round 0")
         elif action != "grant" or type(ceiling) is not int or ceiling <= limit:
             raise Refusal("grant needs a finite ceiling above the current limit")
+        if signed:
+            return signed_approval.request(
+                signed_approval.scope(task, action, token, identity, ceiling)
+            )
         approval_witness.issue(
             task,
             action,
@@ -797,6 +806,7 @@ def decide(
     worktree: str | None = None,
     message: str | None = None,
     base: str | None = None,
+    signed_proof: tuple[Path, Path] | None = None,
 ) -> dict:
     """Record before returning permission; legacy repositories retain existing behaviour."""
     task = task.resolve()
@@ -804,6 +814,8 @@ def decide(
         raise Refusal("task must be an existing ordinary .work directory")
     loaded = policy.effective(policy.load(task.parent.parent, home or Path.home()))
     if loaded["mode"] == "legacy":
+        if signed_proof is not None:
+            raise Refusal("signed approval requires configured policy")
         return {"allowed": True, "reason": "legacy"}
     try:
         with locked(task):
@@ -885,13 +897,17 @@ def decide(
                         event["after"] = {"phase": "approved", "round": 0}
                         result_text = replace_status(text, state, "approved", 0, source)
                     if source == "user":
-                        event["authorization"] = approval_witness.consume(
-                            task,
-                            action,
-                            event["plan"],
-                            event["attempt"],
-                            ceiling,
-                        )
+                        if signed_proof is not None:
+                            binding = signed_approval.scope(
+                                task, action, event["plan"], event["attempt"], ceiling
+                            )
+                            event["authorization"] = signed_approval.consume(
+                                binding, task, *signed_proof
+                            )
+                        else:
+                            event["authorization"] = approval_witness.consume(
+                                task, action, event["plan"], event["attempt"], ceiling
+                            )
                 elif action == "rebase":
                     authorize(entries, event, loaded, task)
                     event["ceiling"] = 0
@@ -1381,6 +1397,7 @@ def main(argv: list[str] | None = None) -> int:
         "action",
         choices=(
             "initialize",
+            "approval-request",
             "rebase",
             "transition",
             "approve",
@@ -1404,8 +1421,41 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base")
     parser.add_argument("--worktree")
     parser.add_argument("--message")
+    parser.add_argument("--request-file", type=Path)
+    parser.add_argument("--signature", type=Path)
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
+        proof = None
+        if args.request_file is not None or args.signature is not None:
+            if (
+                args.request_file is None
+                or args.signature is None
+                or args.action not in ("approve", "grant")
+                or args.source != "user"
+            ):
+                raise Refusal(
+                    "signed approval requires approve or grant, --source user, and both proof files"
+                )
+            proof = (args.request_file, args.signature)
+        if args.action == "approval-request":
+            result = authorization_request(
+                args.task_dir,
+                "grant" if args.ceiling else "approve",
+                args.ceiling,
+                session="",
+                signed=True,
+            )
+            text = json.dumps(result, sort_keys=True) + "\n"
+            if args.output is None:
+                print(text, end="")
+            else:
+                with args.output.open("xb") as handle:
+                    handle.write(text.encode("utf-8"))
+                print(f"wrote approval request to {args.output}")
+            return 0
+        if args.output is not None:
+            raise Refusal("--output is only valid for approval-request")
         if args.action == "initialize":
             initialize(args.task_dir, args.base or "")
             print("initialized unapproved task")
@@ -1427,6 +1477,7 @@ def main(argv: list[str] | None = None) -> int:
             worktree=args.worktree,
             message=args.message,
             base=args.base,
+            signed_proof=proof,
         )
         print(json.dumps(result, sort_keys=True))
         return 0

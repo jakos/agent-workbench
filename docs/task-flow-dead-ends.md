@@ -191,6 +191,10 @@ task, and no enforcement is loosened by this page.
 
 ## Self-hosting
 
+This audit describes a session using the marketplace-installed copy. For
+day-to-day development of agent-workbench, the checkout has
+[development entry points for both hosts](../plugins/task-flow/codex/README.md#this-checkout).
+
 When task-flow changes task-flow, three copies exist at once: the installed plugin
 (`${CLAUDE_PLUGIN_ROOT}`, the copy Claude Code loaded), the root checkout (the
 repository on the base branch, holding `.claude/` configuration and `.work/`), and

@@ -1,6 +1,7 @@
 # agent-workbench
 
-Claude Code plugins for everyday development and reviewed task workflows.
+Plugins for everyday development in Claude Code and reviewed task workflows in
+Claude Code and Codex.
 
 ## Plugins
 
@@ -14,13 +15,18 @@ See [the usage guide](docs/how-to.md) for setup, the task loop and roadmap evide
 
 ## Install
 
-Requires Claude Code, Git, and [uv](https://docs.astral.sh/uv/).
+Both hosts require Git and [uv](https://docs.astral.sh/uv/). For other projects,
+install Task Flow from a GitHub release tag. For example, in Claude Code:
 
 ```text
-/plugin marketplace add jakos/agent-workbench
+/plugin marketplace add jakos/agent-workbench#task-flow-0.18.0
 /plugin install dev-baseline@agent-workbench
 /plugin install task-flow@agent-workbench
 ```
+
+For Codex, see the [release installation instructions](plugins/task-flow/codex/README.md#other-repositories).
+When developing agent-workbench itself, use the
+[current checkout in either host](plugins/task-flow/codex/README.md#this-checkout).
 
 ## Roadmap
 
