@@ -103,11 +103,13 @@ import re
 import shutil
 import sys
 import tempfile
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
 import role_runtime
+import workflow_lock
 
 EPICS_DIRNAME = "_epics"
 EPIC_FILENAME = "epic.md"
@@ -1737,8 +1739,33 @@ def main(argv: list[str] | None = None) -> int:
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
     try:
-        output = args.func(args)
-    except EpicError as exc:
+        mutations = {
+            cmd_new,
+            cmd_add,
+            cmd_remove,
+            cmd_link,
+            cmd_unlink,
+            cmd_retry,
+            cmd_sync_run,
+            cmd_report,
+        }
+        if args.func in mutations:
+            work = work_dir(Path(args.root))
+            work.mkdir(exist_ok=True)
+            with workflow_lock.exclusive(work, "batch"):
+                ids = split_ids(args.tasks) if getattr(args, "tasks", None) else []
+                if args.func is cmd_retry:
+                    ids = [args.task_id]
+                with ExitStack() as locks:
+                    for task_id in sorted(ids):
+                        if (work / task_id).is_dir():
+                            locks.enter_context(
+                                workflow_lock.task_operation(work / task_id)
+                            )
+                    output = args.func(args)
+        else:
+            output = args.func(args)
+    except (EpicError, workflow_lock.Busy, OSError) as exc:
         for line in str(exc).splitlines():
             print(f"epics.py: {line}", file=sys.stderr)
         return 2

@@ -1532,6 +1532,7 @@ def main(argv: list[str] | None = None) -> int:
     which = shutil.which
     plugin_root = Path(__file__).resolve().parents[1]
     home = Path.home()
+    codex = models.host() == "codex"
 
     checks: list[Check] = []
     checks += check_uv(which, run)
@@ -1550,10 +1551,11 @@ def main(argv: list[str] | None = None) -> int:
             ]
     checks.append(check_plugin_source(project, plugin_root, tracked))
     checks.append(check_project_config(project))
-    settings = settings_paths(project, home)
-    checks += check_settings(settings)
-    checks.append(check_permissions(settings))
-    checks.append(check_anthropic_key(env))
+    if not codex:
+        settings = settings_paths(project, home)
+        checks += check_settings(settings)
+        checks.append(check_permissions(settings))
+        checks.append(check_anthropic_key(env))
     models_check, profiles, roles = check_models(project)
     checks.append(models_check)
     checks.append(check_policy(project, home))
@@ -1581,7 +1583,16 @@ def main(argv: list[str] | None = None) -> int:
                     profile["request_timeout_seconds"], ONLINE_TIMEOUT_CAP_SECONDS
                 )
                 checks.append(check_online(profile_name, profile, env, timeout))
-    checks.append(check_hooks(plugin_root))
+    if codex:
+        checks.append(
+            Check(
+                "Codex dispatch hook",
+                "WARN",
+                "inspect the active Task Flow hook in /hooks; the launcher requires a fresh ticket",
+            )
+        )
+    else:
+        checks.append(check_hooks(plugin_root))
     checks += check_sandbox(project, probe=args.sandbox_probe)
     secrets = secret_values(
         env, [profile.get("api_key_env") for profile in (profiles or {}).values()]

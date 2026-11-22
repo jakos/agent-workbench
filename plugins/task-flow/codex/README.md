@@ -11,6 +11,11 @@ project skills use the skill instructions and Python scripts in your working
 tree, including local edits. The project config disables the marketplace copy
 here. Use `$task-run`, `$task-approve`, `$task-finish`, `$task-autopilot`, and
 `$task-release` for the workflow and `$task-list` or `$task-status` to inspect it.
+Review and trust the Task Flow pre-tool hook in `/hooks` before workflow dispatch.
+Use the launcher documented in [Running Task Flow](run.md); commands without
+fresh dispatch evidence refuse. Supported shell and patch events provide the
+hook guardrail. Use an execution environment that protects workflow state
+from other tools and processes.
 
 For Claude Code, start the development session from the checkout root:
 
@@ -55,9 +60,14 @@ the Task Flow skill, then enter its arguments.
 
 Select a repository policy and external model profiles
 using the shipped [policy](../templates/policy.toml) and
-[model](../templates/models.toml) templates. Use the script checker and
+[Codex model](../templates/codex-models.toml) templates. Codex loads
+`.codex/task-flow.models.toml` over the user file at
+`${CODEX_HOME}/task-flow/models.toml` (default `~/.codex`). Claude retains its
+existing `.claude` files. Use the script checker and
 Git worktrees. The Codex and Claude Code installations use the same task
-files and project configuration.
+files and policy. Configure external roles for Claude as well when both
+hosts coordinate tasks in the same checkout. Native Claude role calls cannot
+hold the shared lock and are refused in a dual-host project.
 
 ## Approval and finish
 

@@ -12,7 +12,9 @@ Follow [Phase finish](../skills/workflow/orchestration.md#phase-finish--task-flo
 for the optional SDLC refresh, summary with the validated review's risk, optional
 task record and trailers, and local commit. Stage only reviewed changes and the
 documented finish-generated files. Verify the staged diff against the review
-before committing. Stop if the task branch has unexpected commits or the worktree
+and give the approved commit message file to `phase_gate.py finish-commit
+--task-dir <task> --message-file <message-file>` using the Codex launcher.
+Stop if the task branch has unexpected commits or the worktree
 has unrelated changes. If a prior finish committed successfully, reuse that
 commit only after verifying it matches the reviewed task and finish files.
 

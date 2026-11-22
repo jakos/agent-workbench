@@ -3,6 +3,9 @@
 Follow the shared [Autopilot procedure](../skills/workflow/orchestration.md#autopilot--task-flowtask-autopilot)
 for the run file, stack validation, overview, budgets, breaker and report.
 Use the Task Flow root and configured policy from [Running Task Flow](run.md).
+Write `run.md` through `autopilot.py write-run <run-dir> --expected-sha256
+<hash-or-missing> --input <draft>`. Hash the original bytes before preparing
+the draft. If the file changed, reread it and recalculate the update.
 
 - Resolve external roles as in the single-task procedure. Use the configured
   external backlog profile with `role_run.py --role backlog` for decomposition

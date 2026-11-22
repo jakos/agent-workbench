@@ -32,6 +32,7 @@ import publish_credentials
 import risk
 import role_contracts
 import role_runtime
+import workflow_lock
 from role_runtime import Refusal, log, one_line, redact_record, utc_now
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
@@ -1048,11 +1049,34 @@ def main(argv: list[str] | None = None) -> int:
         except publish_credentials.CredentialError as exc:
             raise Refusal(str(exc)) from None
         args = parse_args(argv)
-    except Refusal as exc:
+        if args.task_dir:
+            with workflow_lock.task_operation(Path(args.task_dir)):
+                return run(args)
+        if args.run_dir:
+            run_dir = Path(args.run_dir).resolve()
+            if (
+                run_dir.parent.name != "_autopilot"
+                or run_dir.parent.parent.name != ".work"
+            ):
+                raise Refusal("run directory must be inside .work/_autopilot")
+            with workflow_lock.exclusive(run_dir.parent.parent, "batch"):
+                return run(args)
+        return run(args)
+    except (Refusal, workflow_lock.Busy) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 2
+
+
+def run(args: argparse.Namespace) -> int:
     try:
         ctx = prepare(args)
+        if ctx.role == "reviewer":
+            import phase_gate
+
+            try:
+                phase_gate.decide(ctx.task_dir, "review", number=ctx.round)
+            except (phase_gate.Refusal, phase_gate.policy.ConfigError) as exc:
+                raise Refusal(str(exc)) from exc
     except Refusal as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 2

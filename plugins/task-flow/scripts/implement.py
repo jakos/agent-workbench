@@ -122,6 +122,7 @@ import drivers
 import models
 import publish_credentials
 import sandbox
+import workflow_lock
 from launch import cmd_command_line, cmd_exe, is_cmd_script
 from rules import check_command, check_write
 
@@ -709,6 +710,9 @@ def prepare(args) -> Context:
         raise Refusal(f"worktree is not a git work tree: {ctx.worktree}")
 
     try:
+        if models.host() == "codex":
+            _, state = phase_gate.status(ctx.task_dir)
+            phase_gate.validate_worktree(ctx.task_dir, ctx.worktree, state["branch"])
         ctx.profiles, roles = models.load(ctx.repo_root)
         selection = models.resolve_implementer(ctx.repo_root, ctx.task_dir)
         ctx.routing = models.attempt_record(
@@ -718,7 +722,7 @@ def prepare(args) -> Context:
             raise models.ConfigError(
                 "--profile must match the pinned routing starting profile"
             )
-    except models.ConfigError as exc:
+    except (models.ConfigError, phase_gate.Refusal) as exc:
         raise Refusal(f"invalid configuration: {exc}") from exc
     name = (
         args.profile or selection["value"]
@@ -2005,12 +2009,22 @@ def main(argv: list[str] | None = None) -> int:
         except publish_credentials.CredentialError as exc:
             raise Refusal(str(exc)) from None
         args = parse_args(argv)
+        with workflow_lock.task_operation(Path(args.task_dir)):
+            return run(args)
+    except (Refusal, workflow_lock.Busy) as exc:
+        print(f"refused: {one_line(exc)}")
+        return 2
+
+
+def run(args: argparse.Namespace) -> int:
+    try:
         ctx = prepare(args)
         before, untracked_before = snapshot(ctx.worktree)
         initial_head = git(ctx.worktree, "rev-parse", "HEAD").strip()
         initial_branch = branch_name(ctx.worktree)
         initial_tracked = {path for _mode, path in index_paths(ctx.worktree)}
         try:
+            models.bind_implementer_host(ctx.task_dir, ctx.profile_name, ctx.profiles)
             models.publish_attempt(ctx.task_dir, ctx.routing)
         except (OSError, models.ConfigError) as exc:
             raise Refusal(str(exc)) from exc

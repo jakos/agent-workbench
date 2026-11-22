@@ -1,0 +1,22 @@
+# Copy to .codex/task-flow.models.toml. Set models appropriate to your account.
+[profiles.codex-worker]
+driver = "cli"
+model = "gpt-6.1-sol"
+billing = "subscription"
+command = ["codex", "exec", "-m", "gpt-6.1-sol", "--sandbox", "workspace-write", "--json", "--ephemeral", "-"]
+usage_format = "codex-jsonl"
+
+[profiles.codex-producer]
+driver = "cli"
+model = "gpt-6-astra"
+billing = "subscription"
+command = ["codex", "exec", "-m", "gpt-6-astra", "--sandbox", "workspace-write", "--json", "--ephemeral", "-"]
+read_only_command = ["codex", "exec", "-m", "gpt-6-astra", "--sandbox", "read-only", "--json", "--ephemeral", "-o", "{last_message_file}", "-"]
+usage_format = "codex-jsonl"
+
+[roles]
+planner = "codex-producer"
+implementer = "codex-worker"
+reviewer = "codex-producer"
+backlog = "codex-producer"
+checker = "script"

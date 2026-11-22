@@ -25,6 +25,20 @@ import epics
 HAS_GIT = shutil.which("git") is not None
 
 
+class RunWriteTest(unittest.TestCase):
+    def test_update_rejects_stale_writer(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / ".work" / "_autopilot" / "test-run"
+            path.parent.parent.mkdir()
+            original = "# Autopilot: test-run\n- mode: semi\n- state: gathering\n"
+            digest = autopilot.update_run(path, "missing", original)
+            update = original.replace("gathering", "planning")
+            self.assertNotEqual(autopilot.update_run(path, digest, update), digest)
+            with self.assertRaisesRegex(autopilot.Refusal, "changed since"):
+                autopilot.update_run(path, digest, original)
+            self.assertEqual((path / "run.md").read_text(encoding="utf-8"), update)
+
+
 def plan(steps=2, criteria=3, commands=2):
     lines = ["# Plan: x", "## Goal", "g", "## Steps"]
     lines += [f"{i}. step {i}" for i in range(1, steps + 1)]

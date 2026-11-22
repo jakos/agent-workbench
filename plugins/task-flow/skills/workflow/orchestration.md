@@ -201,6 +201,12 @@ Release skips its approval gate only for `policy.py decide release` returning
 
 ## Choosing each role's model
 
+In a dual-host project (with `.codex/task-flow.models.toml`), select external
+producer and implementer profiles and the script checker in each host's model
+configuration. This dispatches through the shared task-operation lock. The Claude
+hook refuses native Task Flow roles in dual-host projects because their lifetime
+is outside that lock. Projects with only Claude configuration keep native roles.
+
 At the start of every phase that runs a subagent, run `models.py roles` once from the
 repository root:
 
@@ -337,6 +343,12 @@ missing, duplicate or stale test entries and self-reference before execution.
    an early stop.
 
 ## Phase: baseline (round 0)
+
+For configured-policy tasks with a worktree, run `phase_gate.py create-worktree
+--task-dir <absolute-task-dir>` after resolving any stacked base. That command
+holds the operation lock while authorizing baseline and creating or verifying
+the registered task worktree. Continue at step 3 with that worktree. Keep the
+in-place and legacy paths below for repositories that use them.
 
 1. Refuse unless `plan-approved` is yes. For a newly dispatched stacked task under
    configured policy, compute and validate its base with the controlled `rebase`
@@ -719,6 +731,13 @@ completed, and that the `## Tasks` table matches the epic's rows and dependencie
 
 ### Explicit task list (`--tasks`)
 
+Write run metadata through `autopilot.py write-run <run-dir>
+--expected-sha256 <hash-or-missing> --input <draft>`. The hash is SHA-256 of
+the original run.md bytes. Use `missing` for initial creation. Reload and
+recompute the update on a stale-write refusal. Use epic commands for epic
+membership changes. Batch mutations acquire the batch lock before a task lock
+when both are needed.
+
 `/task-flow:task-autopilot --tasks <id>[,<id>...]` runs tasks that already exist in
 `.work/` as a stacked series in the given order, instead of decomposing requirements; a
 run without `--tasks` is unchanged. For such a run, steps 2–4 (Gather, Decompose,
@@ -937,7 +956,9 @@ All `epics.py` calls run from the repository root:
    This step proposes text; publication still requires the existing separate question.
 6. Commit on the task branch (in the worktree) — allowed without asking unless the
    config says otherwise — including the staged `docs/tasks/<id>.md` from step 4.
-   Show the commit.
+   For configured policy and a task worktree, use `phase_gate.py finish-commit
+   --task-dir <absolute-task-dir> --message-file <message-file>` after staging the
+   reviewed changes and deterministic finish files. Show the commit.
 7. With a policy file, call `policy.py decide push` and `policy.py decide pr`
    with the project and isolation arguments from Policy. Exit 0 permits the action;
    exit 1 asks first; exit 2 refuses. Without a file, use Finish as today.
