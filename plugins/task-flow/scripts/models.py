@@ -266,12 +266,23 @@ class ConfigError(Exception):
     """A configuration problem; the message names the file and the key path."""
 
 
+def host() -> str:
+    """Select model configuration for the coordinating host, not the model provider."""
+    value = os.environ.get("TASK_FLOW_HOST", "claude")
+    if value not in {"claude", "codex"}:
+        raise ConfigError("TASK_FLOW_HOST must be claude or codex")
+    return value
+
+
 def user_file() -> Path:
+    if host() == "codex":
+        home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+        return home / "task-flow" / "models.toml"
     return Path.home() / ".claude" / "task-flow" / "models.toml"
 
 
 def project_file(project_root: Path) -> Path:
-    return Path(project_root) / ".claude" / "task-flow.models.toml"
+    return Path(project_root) / f".{host()}" / "task-flow.models.toml"
 
 
 def _is_int(value) -> bool:
@@ -1033,7 +1044,74 @@ def publish_attempt(task_dir: Path, evidence: dict | None) -> None:
     temporary.replace(path)
 
 
+def check_implementer_host(task_dir: Path) -> None:
+    """Refuse dispatch through a different host while a Codex attempt is pinned."""
+    pin = task_dir / ".implementer-host.json"
+    if not pin.is_file():
+        return
+    import phase_gate
+
+    try:
+        value = json.loads(pin.read_bytes())
+        text, state = phase_gate.status(task_dir)
+        current = phase_gate.resolved_attempt(
+            text, state, task_dir, phase_gate.log_entries(task_dir)
+        )
+        if (
+            state["phase"] in {"implementing", "checking", "reviewing"}
+            and value["attempt"] == current
+            and value["host"] != host()
+        ):
+            raise ConfigError("implementation is pinned to another host; resume there")
+    except (ValueError, KeyError, TypeError, OSError) as exc:
+        raise ConfigError(f"cannot validate implementer host pin: {exc}") from exc
+
+
+def bind_implementer_host(task_dir: Path, profile: str, profiles: dict) -> None:
+    project = task_dir.parent.parent
+    if (
+        host() == "claude"
+        and not (project / ".codex" / "task-flow.models.toml").is_file()
+    ):
+        check_implementer_host(task_dir)
+        return
+    import phase_gate
+
+    pin = task_dir / ".implementer-host.json"
+    text, state = phase_gate.status(task_dir)
+    binding = {
+        "attempt": phase_gate.resolved_attempt(
+            text, state, task_dir, phase_gate.log_entries(task_dir)
+        ),
+        "plan": phase_gate.digest(
+            phase_gate.read(task_dir / "plan.md").encode("utf-8")
+        ),
+        "host": host(),
+        "profile": profile,
+        "profiles": digest(
+            {name: profiles[name] for name in [profile, *profiles[profile]["fallback"]]}
+        ),
+    }
+    check_implementer_host(task_dir)
+    if pin.is_file():
+        previous = json.loads(pin.read_bytes())
+        if previous["attempt"] == binding["attempt"]:
+            if previous != binding:
+                raise ConfigError(
+                    "implementer profile changed; restore the pinned route"
+                )
+            return
+    current_metrics = task_dir / f"impl-{state['round']}.json"
+    if current_metrics.is_file() and not pin.is_file():
+        raise ConfigError(
+            "cannot adopt an implementation round started without a host pin"
+        )
+    phase_gate.publish(pin, json.dumps(binding, sort_keys=True) + "\n")
+
+
 def resolve_implementer(project_root: Path, task_dir: Path | None = None) -> dict:
+    if task_dir is not None:
+        check_implementer_host(task_dir)
     profiles, roles, rules = load(project_root, with_rules=True)
     result = {
         "value": roles.get("implementer", "claude"),

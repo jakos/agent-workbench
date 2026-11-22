@@ -1,3 +1,16 @@
 {
-  "hooks": {}
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^(Bash|apply_patch)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --quiet --script \"${PLUGIN_ROOT}/scripts/codex_hook.py\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
 }

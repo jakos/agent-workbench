@@ -3,8 +3,10 @@
 Use the project Git root as the command working directory. Resolve the
 Task Flow root from this file's parent directory, `codex/`, then
 one level up. In commands below, `run SCRIPT ARGS` means
-`uv run --quiet --script "<task-flow-root>/scripts/SCRIPT" ARGS`.
-Use absolute paths for the project, task directory and worktree.
+`uv run --quiet --script "<task-flow-root>/scripts/codex_host.py" SCRIPT ARGS`.
+Use absolute paths, literal arguments, and a single shell command. Review and
+trust the Task Flow hook in `/hooks`. Its pre-tool event supplies one-use dispatch
+evidence. A missing or untrusted hook leaves the launcher unable to run.
 
 Use the [shared workflow contract](../skills/workflow/SKILL.md) for file
 formats. The [shared orchestration guide](../skills/workflow/orchestration.md)
@@ -28,10 +30,8 @@ commands from `.claude/task-flow.md`.
    any dispatch refusal from the gate.
 3. Resolve the planner when planning and the reviewer before dispatch with
    `models.py select <role> --project <project>`, adding
-   `--override <profile>` when requested. In agent-workbench, if either
-   role selects a Claude subagent, use the shipped project profiles
-   `codex-plan` and `codex-review` respectively if enabled. In other
-   projects use a configured external profile for each producer role. A
+   `--override <profile>` when requested. Select a configured external
+   profile for each producer role. A
    CLI planner or reviewer needs its configured read-only command.
 4. In phase `new`, run
    `role_run.py --role planner --task-dir <task> --project <project> --worktree none --profile <planner>`.
@@ -52,19 +52,15 @@ commands from `.claude/task-flow.md`.
 1. Resolve `models.py roles --project <project> --task-dir <task>`.
    Use the selected external implementer profile. An explicit
    `--implementer` may choose an enabled external profile when routing
-   is inactive. In agent-workbench, if the selection is a Claude subagent
-   and routing is inactive, use the configured `codex-impl` profile.
+   is inactive. The first Codex implementation pins the host, plan and selected
+   profile chain for the current attempt.
    Use `gates.py` when the checker selection is `script`. Report unsupported
    role selections before dispatch.
 2. Check the project rules for `worktree: no` and whether the task already
    ran in place. Hand those tasks back to the Claude workflow for in-place
-   execution. Before creating a worktree for an approved task, transition to
-   `baseline` at round zero, recording `--worktree .work/<id>/worktree`.
-   This validates the current approval before the Git operation. Create the
-   worktree using `git worktree add -b task/<id> <absolute-worktree> <base>`.
-   If the worktree already exists, verify it is registered to the project
-   and on the expected task branch before reusing it. If creation fails,
-   retain phase `baseline` and the reserved path for resumption.
+   execution. Run `phase_gate.py create-worktree --task-dir <task>`. This
+   validates approval, records baseline, and allocates or verifies the
+   task worktree under the shared operation lock.
 3. In phase `baseline`, validate or create the recorded worktree as above.
    Run `gates.py --task-dir <task> --worktree <worktree> --round 0`.
    Once baseline evidence exists, follow the shared guide's routing

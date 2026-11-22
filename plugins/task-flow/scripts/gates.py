@@ -96,6 +96,7 @@ import launch
 import models
 import rules
 import sandbox
+import workflow_lock
 
 CHECKER_ROLE = "checker"
 EXCERPT_LIMIT = 30
@@ -510,6 +511,9 @@ def run(args: argparse.Namespace) -> int:
     import phase_gate
 
     try:
+        if models.host() == "codex":
+            _, state = phase_gate.status(task_dir)
+            phase_gate.validate_worktree(task_dir, run_dir, state["branch"])
         phase_gate.decide(
             task_dir, "baseline" if args.round == 0 else "check", number=args.round
         )
@@ -568,8 +572,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     try:
-        return run(args)
-    except Refusal as exc:
+        with workflow_lock.task_operation(Path(args.task_dir)):
+            return run(args)
+    except (Refusal, workflow_lock.Busy) as exc:
         print(f"gates.py: {exc}", file=sys.stderr)
         return 2
 

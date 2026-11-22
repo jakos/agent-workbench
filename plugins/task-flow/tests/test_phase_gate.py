@@ -19,8 +19,12 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import approval_witness as witness
+import codex_hook
+import codex_host
 import epics
+import models
 import phase_gate as gate
+import workflow_lock
 
 PLAN = """# Plan: Test
 ## Goal
@@ -780,6 +784,80 @@ class WitnessGateTest(GateFixture):
 
 
 class PhaseGateTest(GateFixture):
+    def test_codex_resume_detects_changed_host_or_profile(self) -> None:
+        self.start()
+        profiles = {"worker": {"model": "example", "fallback": []}}
+        with patch.dict(os.environ, {"TASK_FLOW_HOST": "codex"}):
+            models.bind_implementer_host(self.task, "worker", profiles)
+            models.bind_implementer_host(self.task, "worker", profiles)
+            profiles["worker"]["model"] = "changed"
+            with self.assertRaisesRegex(models.ConfigError, "restore the pinned route"):
+                models.bind_implementer_host(self.task, "worker", profiles)
+        with (
+            patch.dict(os.environ, {"TASK_FLOW_HOST": "claude"}),
+            self.assertRaisesRegex(models.ConfigError, "pinned to another host"),
+        ):
+            models.check_implementer_host(self.task)
+
+    def test_task_operation_blocks_other_process_and_releases_on_exit(self) -> None:
+        other = self.task.with_name("t2")
+        other.mkdir()
+        code = (
+            "from pathlib import Path; import sys; "
+            "sys.path.insert(0, sys.argv[1]); import workflow_lock; "
+            "manager = workflow_lock.task_operation(Path(sys.argv[2])); "
+            "manager.__enter__(); print('locked', flush=True); sys.stdin.read()"
+        )
+        with subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                code,
+                str(Path(gate.__file__).parent),
+                str(self.task),
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+        ) as process:
+            try:
+                self.assertEqual(process.stdout.readline().strip(), "locked")
+                with self.assertRaisesRegex(
+                    gate.Refusal, "another Task Flow operation"
+                ):
+                    self.call("approve")
+                with workflow_lock.task_operation(other):
+                    self.assertFalse((self.task / "gates.jsonl").exists())
+            finally:
+                process.kill()
+                process.wait(timeout=10)
+        self.approve()
+
+    def test_codex_hook_and_shallow_launch_require_fresh_matching_ticket(self) -> None:
+        (self.project / ".git").mkdir()
+        payload = {
+            "cwd": str(self.project),
+            "hook_event_name": "PreToolUse",
+            "tool_name": "apply_patch",
+            "tool_input": {
+                "command": "*** Begin Patch\n*** Update File: .work/t1/status.md\n*** End Patch"
+            },
+        }
+        with self.assertRaisesRegex(ValueError, "protected Task Flow state"):
+            codex_hook.decision(payload)
+        command = (
+            f'uv run --quiet --script "{codex_hook.HOST}" models.py roles --project .'
+        )
+        payload.update(tool_name="Bash", tool_input={"command": command})
+        result = codex_hook.decision(payload)
+        updated = result["updatedInput"]["command"]
+        token = updated.rsplit(" ", 1)[1]
+        args = ["models.py", "roles", "--project", "."]
+        self.assertEqual(codex_host.main(args), 2)
+        codex_host.consume(self.project, args, token)
+        with self.assertRaises(FileNotFoundError):
+            codex_host.consume(self.project, args, token)
+
     @unittest.skipUnless(shutil.which("ssh-keygen"), "OpenSSH is unavailable")
     def test_signed_operator_approval_and_grant(self) -> None:
         key = self.root / "approval-key"

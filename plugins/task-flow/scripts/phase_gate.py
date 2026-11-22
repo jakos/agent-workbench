@@ -22,6 +22,7 @@ import approval_witness
 import policy
 import role_contracts
 import signed_approval
+import workflow_lock
 from rules import witness_command, witness_write
 
 PHASES = {
@@ -647,6 +648,97 @@ def local_branch(task: Path, branch: str) -> bool:
     return True
 
 
+def git_output(directory: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(directory), *args],
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        timeout=45,
+    )
+    if result.returncode:
+        raise Refusal(result.stderr.strip() or "Git operation refused")
+    return result.stdout.strip()
+
+
+def validate_worktree(task: Path, worktree: Path, branch: str) -> None:
+    project = task.parent.parent
+    if (
+        worktree.is_symlink()
+        or worktree.is_junction()
+        or worktree.resolve() != task / "worktree"
+    ):
+        raise Refusal("task worktree path must not be linked")
+    common_flags = ("rev-parse", "--path-format=absolute", "--git-common-dir")
+    if (
+        Path(git_output(worktree, "rev-parse", "--show-toplevel")).resolve() != worktree
+        or Path(git_output(project, *common_flags)).resolve()
+        != Path(git_output(worktree, *common_flags)).resolve()
+        or git_output(worktree, "symbolic-ref", "--short", "HEAD") != branch
+    ):
+        raise Refusal(
+            "existing task worktree belongs to a different branch or repository"
+        )
+
+
+@workflow_lock.task_locked(Refusal)
+def create_worktree(task: Path) -> Path:
+    """Authorize allocation and verify the branch and repository before reuse."""
+    task = task.resolve()
+    project = task.parent.parent
+    _, state = status(task)
+    if state["phase"] not in ("approved", "baseline") or state["round"] != 0:
+        raise Refusal("task worktree allocation requires approved or baseline round 0")
+    if state["branch"] != f"task/{task.name}" or not local_branch(task, state["base"]):
+        raise Refusal("invalid recorded task branch or base")
+    project_rules = project / ".claude" / "task-flow.md"
+    if project_rules.is_file() and re.search(
+        r"(?mi)^\s*-\s*worktree:\s*no\b", read(project_rules)
+    ):
+        raise Refusal("project rules disable task worktrees")
+    worktree = task / "worktree"
+    if worktree.is_symlink() or worktree.is_junction():
+        raise Refusal("task worktree path must not be linked")
+    if worktree.exists():
+        validate_worktree(task, worktree, state["branch"])
+    recorded = f".work/{task.name}/worktree"
+    event = decide(task, "transition", target="baseline", worktree=recorded)
+    if event["reason"] == "legacy":
+        raise Refusal("shared worktree allocation requires configured policy")
+    if not worktree.exists():
+        git_output(
+            project,
+            "worktree",
+            "add",
+            "-b",
+            state["branch"],
+            str(worktree),
+            state["base"],
+        )
+    return worktree
+
+
+@workflow_lock.task_locked(Refusal)
+def finish_commit(task: Path, message: Path) -> str:
+    task = task.resolve()
+    event = decide(task, "finish")
+    if event["reason"] == "legacy":
+        raise Refusal("shared finish commit requires configured policy")
+    _, state = status(task)
+    if state["worktree"] == "none":
+        raise Refusal("shared finish requires a registered task worktree")
+    worktree = task / "worktree"
+    validate_worktree(task, worktree, state["branch"])
+    for root in (task.parent.parent, worktree):
+        config = root / ".claude" / "task-flow.md"
+        if config.is_file() and re.search(r"(?mi)^\s*-\s*commit:\s*no\b", read(config)):
+            raise Refusal("project rules disable task commits")
+    if not git_output(worktree, "diff", "--cached", "--name-only"):
+        raise Refusal("no staged task changes to commit")
+    return git_output(worktree, "commit", "-F", str(message.resolve()))
+
+
 def rebase_history(event: dict) -> str:
     link = event["rebase"]
     return f"- {event['time']} rebase — {link['old_base']} → {link['new_base']}; phase gate"
@@ -794,6 +886,7 @@ def authorization_request(
         )
 
 
+@workflow_lock.task_locked(Refusal)
 def decide(
     task: Path,
     action: str,
@@ -1035,6 +1128,7 @@ def decide(
                     "prepare",
                     "baseline",
                     "check",
+                    "review",
                     "finish",
                     "prune",
                 ):
@@ -1055,6 +1149,9 @@ def decide(
                             "implement": "implementing",
                             "baseline": "baseline",
                             "check": "checking",
+                            "review": state["phase"]
+                            if state["phase"] in ("checking", "reviewing")
+                            else "",
                             "finish": "review-approved",
                             "prune": "done",
                         }[action]
@@ -1072,6 +1169,8 @@ def decide(
                             if requested < 1 or requested > limit:
                                 raise Refusal("round cap or invalid round")
                             checks(task, 0, commands)
+                        if action == "review":
+                            checks(task, requested, commands)
                         if action == "check" and loaded["publish"]["enabled"]:
                             import publish_task
 
@@ -1216,6 +1315,19 @@ def hook(payload: dict, *, home: Path | None = None) -> str | None:
         if denial:
             return "workflow gate: " + denial
     launch_role = inputs.get("subagent_type")
+    if (
+        tool in ("Agent", "Task")
+        and launch_role
+        in {
+            "task-flow:planner",
+            "task-flow:implementer",
+            "task-flow:checker",
+            "task-flow:reviewer",
+            "task-flow:backlog",
+        }
+        and (project / ".codex" / "task-flow.models.toml").is_file()
+    ):
+        return "workflow gate: dual-host tasks require a shared runner; select an external role or script checker"
     launch = tool in ("Agent", "Task") and launch_role in (
         "task-flow:implementer",
         "task-flow:checker",
@@ -1373,6 +1485,13 @@ def hook(payload: dict, *, home: Path | None = None) -> str | None:
         action = "implement" if launch else "finish"
         if launch and launch_role == "task-flow:checker":
             action = "baseline" if status(task)[1]["round"] == 0 else "check"
+        if action == "implement":
+            import models
+
+            try:
+                models.check_implementer_host(task)
+            except models.ConfigError as exc:
+                raise Refusal(str(exc)) from exc
         decide(task, action, home=home)
         return None
     except (Refusal, ValueError, OSError, KeyError, TypeError) as exc:
@@ -1398,6 +1517,8 @@ def main(argv: list[str] | None = None) -> int:
         choices=(
             "initialize",
             "approval-request",
+            "create-worktree",
+            "finish-commit",
             "rebase",
             "transition",
             "approve",
@@ -1424,6 +1545,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--request-file", type=Path)
     parser.add_argument("--signature", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--message-file", type=Path)
     args = parser.parse_args(argv)
     try:
         proof = None
@@ -1460,6 +1582,14 @@ def main(argv: list[str] | None = None) -> int:
             initialize(args.task_dir, args.base or "")
             print("initialized unapproved task")
             return 0
+        if args.action == "create-worktree":
+            print(create_worktree(args.task_dir))
+            return 0
+        if args.action == "finish-commit":
+            if args.message_file is None:
+                raise Refusal("finish-commit requires --message-file")
+            print(finish_commit(args.task_dir, args.message_file))
+            return 0
         human = args.source == "user" and args.action == "recover"
         if human:
             human_confirmation(args.task_dir, args.action, args.ceiling)
@@ -1481,7 +1611,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(result, sort_keys=True))
         return 0
-    except (Refusal, policy.ConfigError, OSError) as exc:
+    except (
+        Refusal,
+        policy.ConfigError,
+        workflow_lock.Busy,
+        OSError,
+        subprocess.TimeoutExpired,
+    ) as exc:
         print(f"phase gate refused: {exc}", file=sys.stderr)
         return 2
 

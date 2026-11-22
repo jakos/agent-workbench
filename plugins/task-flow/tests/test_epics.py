@@ -382,7 +382,11 @@ class CreationTest(Fixture):
         self.refused(
             "new", ".", "demo", "--title", "T", "--goal", "G", "--base", "main"
         )
-        after = sorted(p.name for p in (self.root / ".work").iterdir())
+        after = sorted(
+            p.name
+            for p in (self.root / ".work").iterdir()
+            if p.name != ".operation-batch.lock"
+        )
         self.assertEqual(before, after)
 
     def test_is_epic_and_list_and_epic_of(self):

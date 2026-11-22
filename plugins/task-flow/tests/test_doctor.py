@@ -948,6 +948,9 @@ class ChangesNothingTest(DoctorTest):
         provider = FakeProvider(make_handler([], 200, ["mistral-large"]))
         self.addCleanup(provider.stop)
         self.init_repo()
+        # The setup commit can otherwise start detached Git maintenance that
+        # changes .git while the read-only test is taking its snapshots.
+        self.git("config", "--local", "maintenance.auto", "false")
         self.write_full_settings()
         self.project_models(self.online_toml(provider.url))
         self.commit(".claude/settings.json", ".claude/task-flow.models.toml")

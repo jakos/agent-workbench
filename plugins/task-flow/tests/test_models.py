@@ -34,6 +34,36 @@ billing = "api"
 """
 
 
+class HostConfigTest(unittest.TestCase):
+    def test_configs_have_disjoint_defaults_and_project_wins(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            project, home = root / "project", root / "codex-home"
+            with mock.patch.dict(
+                os.environ, {"TASK_FLOW_HOST": "codex", "CODEX_HOME": str(home)}
+            ):
+                user_file = models.user_file()
+                user_file.parent.mkdir(parents=True)
+                user_file.write_text(BASE, encoding="utf-8")
+                project_file = models.project_file(project)
+                project_file.parent.mkdir(parents=True)
+                project_file.write_text(
+                    '[profiles.mistral]\nmodel = "codex-project"\n', encoding="utf-8"
+                )
+                self.assertEqual(
+                    models.load(project)[0]["mistral"]["model"], "codex-project"
+                )
+            with (
+                mock.patch.dict(os.environ, {"TASK_FLOW_HOST": "claude"}),
+                mock.patch.object(Path, "home", return_value=root / "claude-home"),
+            ):
+                self.assertEqual(
+                    models.project_file(project),
+                    project / ".claude/task-flow.models.toml",
+                )
+                self.assertEqual(models.load(project), ({}, {}))
+
+
 class ModelsTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

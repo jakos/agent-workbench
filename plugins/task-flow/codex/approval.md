@@ -19,7 +19,7 @@ exact plan, prepare a fresh request with a unique output filename under the task
 directory. Use absolute paths and run from the project root:
 
 ```text
-uv run --script "<task-flow-root>/scripts/phase_gate.py" approval-request --task-dir "<task-dir>" --output "<request.json>"
+uv run --quiet --script "<task-flow-root>/scripts/codex_host.py" phase_gate.py approval-request --task-dir "<task-dir>" --output "<request.json>"
 ```
 
 For a grant, include `--ceiling <number>` with a finite total round ceiling.
@@ -36,7 +36,7 @@ and signature path (normally `<request.json>.sig`). For a grant they also supply
 the same `--ceiling`. Run:
 
 ```text
-uv run --script "<task-flow-root>/scripts/phase_gate.py" approve --source user --task-dir "<task-dir>" --request-file "<request.json>" --signature "<request.json>.sig"
+uv run --quiet --script "<task-flow-root>/scripts/codex_host.py" phase_gate.py approve --source user --task-dir "<task-dir>" --request-file "<request.json>" --signature "<request.json>.sig"
 ```
 
 For a grant use `grant` and add the same `--ceiling <number>`.

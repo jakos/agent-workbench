@@ -90,6 +90,7 @@ It also exposes `verification_commands(plan)`, the shared parser of a plan's fir
 
 import argparse
 import fnmatch
+import hashlib
 import itertools
 import json
 import math
@@ -102,6 +103,7 @@ from pathlib import Path
 
 import epics
 import role_runtime
+import workflow_lock
 
 # Coarse default estimate constants (tokens). Invented, not measured.
 CHECK_BASE, CHECK_PER_COMMAND = 15000, 3000
@@ -372,20 +374,31 @@ def routing_previews(history: list[str]) -> dict[str, dict]:
     return previews
 
 
+def run_directory(path: str | Path) -> Path:
+    run_dir = Path(path).resolve()
+    if (
+        run_dir.parent.name != "_autopilot"
+        or run_dir.parent.parent.name != ".work"
+        or not plain_folder_name(run_dir.name)
+    ):
+        raise Refusal(f"{path} is not inside .work/_autopilot/")
+    return run_dir
+
+
 def load_run(
     run_dir_arg: str,
     for_next: bool,
     external: bool = False,
     planner_external: bool = False,
     budget_scope: str | None = None,
+    *,
+    text: str | None = None,
 ) -> dict:
-    run_dir = Path(run_dir_arg).resolve()
+    run_dir = run_directory(run_dir_arg)
     if not run_dir.is_dir():
         raise Refusal(f"{run_dir_arg} is not a directory")
-    if run_dir.parent.name != "_autopilot" or run_dir.parent.parent.name != ".work":
-        raise Refusal(f"{run_dir_arg} is not inside .work/_autopilot/")
     work = run_dir.parent.parent
-    parts = sections(read_text(run_dir / "run.md"))
+    parts = sections(read_text(run_dir / "run.md") if text is None else text)
     previews = routing_previews(parts.get("history", []))
     fields = header_fields(parts[""])
     for key in ("mode", "budget", "planning-tokens", "continue-past", "bootstrap"):
@@ -1024,10 +1037,48 @@ def delivery_line(task_dir: Path, *, home: Path | None = None) -> str:
         ) from None
 
 
+def update_run(run_dir: Path, expected: str, text: str) -> str:
+    run_dir = run_directory(run_dir)
+    target = run_dir / "run.md"
+    with workflow_lock.exclusive(run_dir.parent.parent, "batch"):
+        if target.is_symlink():
+            raise Refusal("run.md must not be a symbolic link")
+        old = target.read_bytes() if target.is_file() else None
+        current = hashlib.sha256(old).hexdigest() if old is not None else "missing"
+        if current != expected:
+            raise Refusal("run.md changed since it was read; reload before retrying")
+        parts = sections(text)
+        fields = header_fields(parts[""])
+        if (
+            not text.startswith(f"# Autopilot: {run_dir.name}\n")
+            or fields.get("state")
+            not in {
+                "gathering",
+                "planning",
+                "ready",
+                "running",
+                "paused",
+                "done",
+                "stopped",
+            }
+            or fields.get("mode") not in {"semi", "full"}
+        ):
+            raise Refusal("invalid Autopilot run identity, mode or state")
+        if fields["state"] in {"ready", "running"}:
+            load_run(str(run_dir), for_next=fields["state"] == "running", text=text)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        epics.atomic_write(target, text)
+        return hashlib.sha256(target.read_bytes()).hexdigest()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("inspect").add_argument("path")
+    write_parser = sub.add_parser("write-run")
+    write_parser.add_argument("path", type=Path)
+    write_parser.add_argument("--expected-sha256", required=True)
+    write_parser.add_argument("--input", required=True, type=Path)
     stack_parser = sub.add_parser("stack")
     stack_parser.add_argument("path")
     stack_parser.add_argument("ids")
@@ -1061,6 +1112,8 @@ def main() -> int:
     try:
         if args.command == "inspect":
             output = inspect(args.path)
+        elif args.command == "write-run":
+            output = update_run(args.path, args.expected_sha256, read_text(args.input))
         elif args.command == "stack":
             output = stack(
                 args.path, args.ids, external=args.implementer_kind == "profile"
@@ -1070,22 +1123,24 @@ def main() -> int:
         elif args.command == "base":
             output = base_line(args.path, args.task_id)
         else:
-            run = load_run(
-                args.path,
-                for_next=args.command == "next",
-                external=args.implementer_kind == "profile",
-                planner_external=args.planner_kind == "profile",
-                budget_scope=args.budget_scope,
-            )
-            output = estimate(run) if args.command == "estimate" else next_step(run)
-            if args.command == "next" and output.startswith("run "):
-                import phase_gate
+            work = run_directory(args.path).parent.parent
+            with workflow_lock.exclusive(work, "batch"):
+                run = load_run(
+                    args.path,
+                    for_next=args.command == "next",
+                    external=args.implementer_kind == "profile",
+                    planner_external=args.planner_kind == "profile",
+                    budget_scope=args.budget_scope,
+                )
+                output = estimate(run) if args.command == "estimate" else next_step(run)
+                if args.command == "next" and output.startswith("run "):
+                    import phase_gate
 
-                try:
-                    phase_gate.decide(Path(run["work"]) / output[4:], "dispatch")
-                except (phase_gate.Refusal, phase_gate.policy.ConfigError) as exc:
-                    raise Refusal(str(exc)) from exc
-    except Refusal as error:
+                    try:
+                        phase_gate.decide(Path(run["work"]) / output[4:], "dispatch")
+                    except (phase_gate.Refusal, phase_gate.policy.ConfigError) as exc:
+                        raise Refusal(str(exc)) from exc
+    except (Refusal, OSError, workflow_lock.Busy) as error:
         print(f"autopilot.py: {error}", file=sys.stderr)
         return 2
     sys.stdout.reconfigure(encoding="utf-8")
